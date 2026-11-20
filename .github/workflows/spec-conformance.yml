@@ -1,0 +1,48 @@
+name: Spec Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      spec_ref:
+        description: "mongory-spec git ref (branch, tag, or SHA)"
+        required: false
+        default: "main"
+
+jobs:
+  conformance:
+    name: mongory-spec Conformance (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout mongory-py
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout mongory-spec
+        uses: actions/checkout@v4
+        with:
+          repository: mongoryhq/mongory-spec
+          ref: ${{ inputs.spec_ref || 'main' }}
+          path: mongory-spec
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build C extension
+        run: python scripts/build_ext.py
+
+      - name: Run mongory-spec conformance suite
+        env:
+          MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
+        run: python -m unittest tests/test_conformance.py -v

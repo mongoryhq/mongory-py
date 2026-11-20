@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout mongory-py (with mongory-core submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout mongory-spec
+        uses: actions/checkout@v4
+        with:
+          repository: mongoryhq/mongory-spec
+          path: mongory-spec
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build C extension
+        run: python scripts/build_ext.py
+
+      - name: Run unit, fuzz, and mongory-spec conformance tests
+        env:
+          MONGORY_SPEC_DIR: ${{ github.workspace }}/mongory-spec
+        run: python -m unittest discover -s tests -v

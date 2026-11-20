@@ -1,0 +1,192 @@
+"""Unit tests for mongory-py Pythonic API, operator constants, extensions, and limits."""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+import sys
+import unittest
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import mongory  # noqa: E402
+from mongory import op  # noqa: E402
+import mongory.operator as op_alias  # noqa: E402
+
+
+@dataclasses.dataclass
+class UserRecord:
+    name: str
+    age: int
+    tags: list[str]
+    active: bool = True
+
+
+class Money:
+    def __init__(self, currency: str, amount: int) -> None:
+        self.currency = currency
+        self.amount = amount
+
+
+class TestMongoryPythonAPI(unittest.TestCase):
+    def test_operator_constants_and_alias(self) -> None:
+        self.assertEqual(op.EQ, "$eq")
+        self.assertEqual(op.NE, "$ne")
+        self.assertEqual(op.GT, "$gt")
+        self.assertEqual(op.GTE, "$gte")
+        self.assertEqual(op.LT, "$lt")
+        self.assertEqual(op.LTE, "$lte")
+        self.assertEqual(op.IN, "$in")
+        self.assertEqual(op.NIN, "$nin")
+        self.assertEqual(op.EXISTS, "$exists")
+        self.assertEqual(op.PRESENT, "$present")
+        self.assertEqual(op.AND, "$and")
+        self.assertEqual(op.OR, "$or")
+        self.assertEqual(op.NOT, "$not")
+        self.assertEqual(op.ELEM_MATCH, "$elemMatch")
+        self.assertEqual(op.EVERY, "$every")
+        self.assertEqual(op.SIZE, "$size")
+        self.assertEqual(op.REGEX, "$regex")
+        self.assertEqual(op.OPTIONS, "$options")
+        self.assertEqual(op_alias.ELEM_MATCH, "$elemMatch")
+        self.assertEqual(op_alias.IN, "$in")
+
+        m = mongory.compile(
+            {
+                "age": {op.GTE: 18, op.LT: 65},
+                op.OR: [
+                    {"role": {op.IN: ["admin", "editor"]}},
+                    {"tags": {op.ELEM_MATCH: {op.EQ: "vip"}}},
+                ],
+            }
+        )
+        self.assertTrue(m.match({"age": 30, "role": "admin"}))
+        self.assertTrue(m.match({"age": 22, "role": "guest", "tags": ["vip"]}))
+        self.assertFalse(m.match({"age": 16, "role": "admin"}))
+
+    def test_collection_helpers_and_callable(self) -> None:
+        users = [
+            {"name": "Ann", "age": 30, "tags": ("py", "c"), "active": True},
+            {"name": "Bob", "age": 15, "tags": ("ruby",), "active": True},
+            {"name": "Cid", "age": 42, "tags": ("py", "go"), "active": False},
+            {"name": "Dan", "age": 25, "tags": ("py",), "active": True},
+        ]
+        m = mongory.compile(
+            mongory.and_(
+                {"active": True},
+                mongory.or_({"tags": "py"}, {"age": {op.LT: 18}}),
+            )
+        )
+
+        # __call__ works directly with built-in filter()
+        self.assertEqual([u["name"] for u in filter(m, users)], ["Ann", "Bob", "Dan"])
+
+        # Lazy iterator filter() + limit
+        it = m.filter(users)
+        self.assertEqual(next(it)["name"], "Ann")
+        self.assertEqual([u["name"] for u in m.filter(users, limit=2)], ["Ann", "Bob"])
+        self.assertEqual(m.filter_list(users, limit=0), [])
+        self.assertEqual(m.find_one(users), users[0])
+        self.assertIsNone(mongory.compile({"age": {op.GT: 100}}).find_one(users))
+        self.assertTrue(m.any(users))
+        self.assertFalse(mongory.compile(mongory.or_()).any(users))
+        self.assertEqual(m.count(users), 3)
+        self.assertTrue(mongory.match(None, {"anything": 1}))
+
+    def test_compiled_re_pattern_and_dataclass_records(self) -> None:
+        m = mongory.compile(
+            {
+                "name": re.compile(r"^a", re.IGNORECASE),
+                "age": {op.GTE: 18},
+                "tags": "py",
+            }
+        )
+        self.assertTrue(m.match(UserRecord(name="Alice", age=28, tags=["py", "c"])))
+        self.assertFalse(m.match(UserRecord(name="Bob", age=28, tags=["py"])))
+
+    def test_explain_and_trace(self) -> None:
+        m = mongory.compile(
+            {
+                "name": {op.REGEX: "^A"},
+                "age": {op.GTE: 18},
+                "active": True,
+            }
+        )
+        plan_text = m.explain()
+        self.assertIn("Field", plan_text)
+        plan_tree = m.explain_tree()
+        self.assertEqual(plan_tree["name"], "And")
+        self.assertEqual(len(plan_tree["children"]), 3)
+
+        matched, trace_text = m.trace({"name": "Bob", "age": 15, "active": False})
+        self.assertFalse(matched)
+        self.assertIn("[FAIL]", trace_text)
+        self.assertIn("[SKIP]", trace_text)
+
+        matched2, trace_tree = m.trace_tree({"name": "Alice", "age": 25, "active": True})
+        self.assertTrue(matched2)
+        self.assertEqual(trace_tree["result"], "pass")
+
+    def test_compile_scoped_converters_and_custom_operators(self) -> None:
+        def compile_money_gte(target: Any):
+            if not isinstance(target, Money):
+                raise ValueError("$moneyGte requires a Money instance")
+
+            def predicate(val: Any, exists: bool) -> bool:
+                return (
+                    exists
+                    and isinstance(val, Money)
+                    and val.currency == target.currency
+                    and val.amount >= target.amount
+                )
+
+            return predicate
+
+        m = mongory.compile(
+            {
+                "price": {"$moneyGte": Money("USD", 100)},
+                "tags": {op.IN: ["sale"]},
+            },
+            converters={set: sorted},
+            operators={"$moneyGte": compile_money_gte},
+        )
+        self.assertTrue(m.match({"price": Money("USD", 150), "tags": {"sale", "new"}}))
+        self.assertFalse(m.match({"price": Money("USD", 80), "tags": {"sale"}}))
+        self.assertFalse(m.match({"price": Money("EUR", 200), "tags": {"sale"}}))
+
+        # Without the custom operator registered, $moneyGte is rejected
+        with self.assertRaises(mongory.InvalidConditionError):
+            mongory.compile({"price": {"$moneyGte": Money("USD", 100)}})
+
+    def test_limits_cycles_and_error_hierarchy(self) -> None:
+        self.assertTrue(issubclass(mongory.InvalidConditionError, mongory.MongoryError))
+        self.assertTrue(issubclass(mongory.InvalidConditionError, ValueError))
+        self.assertTrue(issubclass(mongory.LimitExceededError, mongory.InvalidConditionError))
+        self.assertTrue(issubclass(mongory.InvalidOptionError, mongory.MongoryError))
+        self.assertTrue(issubclass(mongory.InvalidOptionError, ValueError))
+
+        with self.assertRaises(mongory.InvalidOptionError):
+            mongory.compile({}, max_depth=0)
+
+        with self.assertRaises(mongory.LimitExceededError):
+            mongory.compile({"a.b.c.d": 1}, max_depth=2)
+
+        with self.assertRaises(mongory.LimitExceededError):
+            mongory.compile({"a": 1, "b": 2, "c": 3}, max_nodes=2)
+
+        # Single large $in counts as 1 node
+        m = mongory.compile({"a": {op.IN: list(range(100))}}, max_nodes=5)
+        self.assertTrue(m.match({"a": 42}))
+
+        # Circular condition is rejected
+        cyclic: dict[str, Any] = {}
+        cyclic["self"] = cyclic
+        with self.assertRaises(mongory.InvalidConditionError):
+            mongory.compile(cyclic)
+
+
+if __name__ == "__main__":
+    unittest.main()

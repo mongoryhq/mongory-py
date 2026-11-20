@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mongory"
+version = "0.1.0"
+description = "C99-accelerated in-memory Mongo-style rule engine & query matcher with explain and trace debugging"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Frank Liao", email = "koten0224@gmail.com" }]
+keywords = [
+    "mongory",
+    "mongodb",
+    "query",
+    "matcher",
+    "filter",
+    "rule-engine",
+    "in-memory",
+    "c-extension",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://mongoryhq.github.io/mongory-central/"
+Repository = "https://github.com/mongoryhq/mongory-py"
+Issues = "https://github.com/mongoryhq/mongory-py/issues"
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
+test-command = "python -m unittest discover -s {project}/tests -v"
