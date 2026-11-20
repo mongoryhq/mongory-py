@@ -26,6 +26,11 @@ struct py_mongory_memory_pool_t {
 
 struct py_mongory_matcher_t {
   PyObject_HEAD
+  /* Recursive per-matcher lock: core mutates shared matcher state (lazy builds, tracing) and may hold
+   * its own mutex while calling back into Python, so concurrent callers must wait without the GIL. */
+  PyThread_type_lock lock;
+  unsigned long lock_owner;
+  int lock_depth;
   mongory_matcher *matcher;
   mongory_value *condition;
   py_mongory_memory_pool_t *pool;
@@ -54,8 +59,140 @@ static PyObject *py_invalid_condition_error = NULL;
 static PyObject *py_re_module = NULL;
 static PyObject *py_re_pattern_type = NULL;
 
-/* Active compile context used during synchronous mongory_matcher_new / lazy array build */
-static PyObject *current_compile_context = NULL;
+#if defined(_MSC_VER)
+#  define MG_THREAD_LOCAL __declspec(thread)
+#else
+#  define MG_THREAD_LOCAL __thread
+#endif
+
+/*
+ * Per-call state for a compile/match/trace entering mongory-core. Core callbacks cannot report
+ * Python exceptions, so the first one is parked here and re-raised once core returns.
+ */
+typedef struct py_call_frame {
+  PyObject *context;     /* borrowed CompileContext (or None) */
+  PyObject *exc;         /* pending exception to re-raise as-is */
+  PyObject *build_cause; /* exception chained as __cause__ of a compile error */
+  struct py_call_frame *prev;
+} py_call_frame;
+
+static MG_THREAD_LOCAL py_call_frame *current_frame = NULL;
+
+static void py_frame_enter(py_call_frame *frame, PyObject *context) {
+  frame->context = context;
+  frame->exc = NULL;
+  frame->build_cause = NULL;
+  frame->prev = current_frame;
+  current_frame = frame;
+}
+
+static void py_frame_exit(py_call_frame *frame) {
+  current_frame = frame->prev;
+}
+
+static inline bool py_callback_aborted(void) {
+  return current_frame && current_frame->exc;
+}
+
+/* Fetches and clears the current error, returning the normalized exception (new ref). */
+static PyObject *py_fetch_exception(void) {
+#if PY_VERSION_HEX >= 0x030C0000
+  return PyErr_GetRaisedException();
+#else
+  PyObject *type = NULL, *value = NULL, *tb = NULL;
+  PyErr_Fetch(&type, &value, &tb);
+  PyErr_NormalizeException(&type, &value, &tb);
+  if (value && tb) {
+    PyException_SetTraceback(value, tb);
+  }
+  Py_XDECREF(type);
+  Py_XDECREF(tb);
+  return value;
+#endif
+}
+
+/* Raises `exc` (steals the reference). */
+static void py_raise_exception(PyObject *exc) {
+#if PY_VERSION_HEX >= 0x030C0000
+  PyErr_SetRaisedException(exc);
+#else
+  PyObject *type = (PyObject *)Py_TYPE(exc);
+  Py_INCREF(type);
+  PyErr_Restore(type, exc, PyException_GetTraceback(exc));
+#endif
+}
+
+/* Parks the current Python error in the active frame; only the first error is kept. */
+static void py_capture_callback_error(void) {
+  py_call_frame *frame = current_frame;
+  if (!frame || frame->exc) {
+    PyErr_Clear();
+    return;
+  }
+  frame->exc = py_fetch_exception();
+}
+
+/* Like py_capture_callback_error, but wraps ordinary exceptions as `err_type(prefix: msg) from exc`. */
+static void py_capture_callback_error_as(PyObject *err_type, const char *prefix) {
+  if (!PyErr_ExceptionMatches(PyExc_Exception)) {
+    py_capture_callback_error();
+    return;
+  }
+  PyObject *cause = py_fetch_exception();
+  PyErr_Format(err_type, "%s: %S", prefix, cause);
+  PyObject *wrapped = py_fetch_exception();
+  if (wrapped && cause) {
+    PyException_SetCause(wrapped, cause);
+  } else {
+    Py_XDECREF(cause);
+  }
+  if (!wrapped) return;
+  if (!current_frame || current_frame->exc) {
+    Py_DECREF(wrapped);
+    return;
+  }
+  current_frame->exc = wrapped;
+}
+
+/* `message` must outlive the pool (literal or pool-allocated). */
+static void py_set_pool_error(mongory_memory_pool *pool, const char *message) {
+  if (pool->error) return;
+  mongory_error *error = MG_ALLOC_PTR(pool, mongory_error);
+  if (!error) {
+    pool->error = &MONGORY_ALLOC_ERROR;
+    return;
+  }
+  error->type = MONGORY_ERROR_INVALID_ARGUMENT;
+  error->message = message;
+  pool->error = error;
+}
+
+/*
+ * Converts the outcome of a core call into a Python error. Returns true (with an error set) on failure.
+ * Must run before `pool` is released because the error message may live in it.
+ */
+static bool py_frame_finish(py_call_frame *frame, mongory_memory_pool *pool, PyObject *err_type, const char *fallback,
+                            bool failed) {
+  if (frame->exc) {
+    Py_CLEAR(frame->build_cause);
+    py_raise_exception(frame->exc);
+    frame->exc = NULL;
+    return true;
+  }
+  if (!failed && !pool->error) {
+    Py_CLEAR(frame->build_cause);
+    return false;
+  }
+  const char *msg = (pool->error && pool->error->message) ? pool->error->message : fallback;
+  PyErr_SetString(err_type, msg);
+  if (frame->build_cause) {
+    PyObject *exc = py_fetch_exception();
+    PyException_SetCause(exc, frame->build_cause);
+    frame->build_cause = NULL;
+    py_raise_exception(exc);
+  }
+  return true;
+}
 
 static mongory_value *py_to_mongory_value_deep(mongory_memory_pool *pool, PyObject *obj);
 static mongory_value *py_to_mongory_value_shallow(mongory_memory_pool *pool, PyObject *obj);
@@ -167,9 +304,15 @@ static mongory_value *py_to_mongory_value_primitive(mongory_memory_pool *pool, P
       return mongory_value_wrap_i(pool, (int64_t)val);
     }
     PyErr_Clear();
+    /* Beyond int64: use a double only when it is exact, otherwise distinct ints would compare equal. */
     double d = PyLong_AsDouble(obj);
     if (!PyErr_Occurred()) {
-      return mongory_value_wrap_d(pool, d);
+      PyObject *as_float = PyFloat_FromDouble(d);
+      int exact = as_float ? PyObject_RichCompareBool(obj, as_float, Py_EQ) : -1;
+      Py_XDECREF(as_float);
+      if (exact == 1) {
+        return mongory_value_wrap_d(pool, d);
+      }
     }
     PyErr_Clear();
     return mongory_value_wrap_u(pool, (void *)obj);
@@ -178,8 +321,10 @@ static mongory_value *py_to_mongory_value_primitive(mongory_memory_pool *pool, P
     return mongory_value_wrap_d(pool, PyFloat_AsDouble(obj));
   }
   if (PyUnicode_Check(obj)) {
-    const char *cstr = PyUnicode_AsUTF8(obj);
-    if (!cstr) {
+    Py_ssize_t size = 0;
+    const char *cstr = PyUnicode_AsUTF8AndSize(obj, &size);
+    /* Core strings are NUL-terminated; embedded NULs would silently truncate comparisons. */
+    if (!cstr || strlen(cstr) != (size_t)size) {
       PyErr_Clear();
       return mongory_value_wrap_u(pool, (void *)obj);
     }
@@ -198,25 +343,16 @@ static mongory_value *py_to_mongory_value_shallow_rec(mongory_memory_pool *pool,
     return mg_val;
   }
 
-  if (PyList_Check(obj)) {
-    mg_val = py_mongory_array_wrap(pool, obj, false);
-    mg_val->origin = (void *)obj;
-    return mg_val;
-  }
-  if (PyTuple_Check(obj)) {
-    mg_val = py_mongory_array_wrap(pool, obj, true);
-    mg_val->origin = (void *)obj;
-    return mg_val;
+  if (PyList_Check(obj) || PyTuple_Check(obj)) {
+    return py_mongory_array_wrap(pool, obj, PyTuple_Check(obj));
   }
   if (PyDict_Check(obj)) {
-    mg_val = py_mongory_table_wrap(pool, obj);
-    mg_val->origin = (void *)obj;
-    return mg_val;
+    return py_mongory_table_wrap(pool, obj);
   }
 
   py_mongory_memory_pool_t *py_pool = (py_mongory_memory_pool_t *)pool;
   py_mongory_matcher_t *owner = py_pool ? py_pool->owner : NULL;
-  if (!converted && owner && owner->context && owner->context != Py_None) {
+  if (!converted && owner && owner->context && owner->context != Py_None && !py_callback_aborted()) {
     PyObject *conv = PyObject_CallMethod(owner->context, "convert_data", "O", obj);
     if (conv) {
       if (conv != obj) {
@@ -227,7 +363,7 @@ static mongory_value *py_to_mongory_value_shallow_rec(mongory_memory_pool *pool,
       }
       Py_DECREF(conv);
     } else {
-      PyErr_Clear();
+      py_capture_callback_error();
     }
   }
 
@@ -257,6 +393,7 @@ static mongory_value *py_to_mongory_value_deep_rec(mongory_memory_pool *pool, Py
 
   if (PyList_Check(obj) || PyTuple_Check(obj)) {
     mongory_array *arr = mongory_array_new(pool);
+    if (!arr) return NULL;
     Py_ssize_t len = PyList_Check(obj) ? PyList_GET_SIZE(obj) : PyTuple_GET_SIZE(obj);
     for (Py_ssize_t i = 0; i < len; i++) {
       PyObject *item = PyList_Check(obj) ? PyList_GET_ITEM(obj, i) : PyTuple_GET_ITEM(obj, i);
@@ -270,6 +407,7 @@ static mongory_value *py_to_mongory_value_deep_rec(mongory_memory_pool *pool, Py
 
   if (PyDict_Check(obj)) {
     mongory_table *table = mongory_table_new(pool);
+    if (!table) return NULL;
     PyObject *key = NULL;
     PyObject *val = NULL;
     Py_ssize_t pos = 0;
@@ -306,7 +444,7 @@ static mongory_value *py_to_mongory_value_deep_rec(mongory_memory_pool *pool, Py
     return mg_val;
   }
 
-  if (!converted && owner && owner->context && owner->context != Py_None) {
+  if (!converted && owner && owner->context && owner->context != Py_None && !py_callback_aborted()) {
     PyObject *conv = PyObject_CallMethod(owner->context, "convert_data", "O", obj);
     if (conv) {
       if (conv != obj) {
@@ -318,7 +456,7 @@ static mongory_value *py_to_mongory_value_deep_rec(mongory_memory_pool *pool, Py
       }
       Py_DECREF(conv);
     } else {
-      PyErr_Clear();
+      py_capture_callback_error();
     }
   }
 
@@ -353,6 +491,7 @@ static mongory_value *py_mongory_table_get(mongory_table *self, char *key) {
 
 static mongory_value *py_mongory_table_wrap(mongory_memory_pool *pool, PyObject *dict_obj) {
   py_mongory_table_t *table = MG_ALLOC_PTR(pool, py_mongory_table_t);
+  if (!table) return NULL;
   py_mongory_memory_pool_t *py_pool = (py_mongory_memory_pool_t *)pool;
   table->base.pool = pool;
   table->base.get = py_mongory_table_get;
@@ -383,6 +522,7 @@ static mongory_value *py_mongory_array_get(mongory_array *self, size_t index) {
 
 static mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_obj, bool is_tuple) {
   py_mongory_array_t *arr = MG_ALLOC_PTR(pool, py_mongory_array_t);
+  if (!arr) return NULL;
   py_mongory_memory_pool_t *py_pool = (py_mongory_memory_pool_t *)pool;
   arr->base.pool = pool;
   arr->base.get = py_mongory_array_get;
@@ -445,7 +585,7 @@ static PyObject *py_mongory_regex_cache(mongory_memory_pool *pool, mongory_value
 }
 
 static bool py_mongory_regex_match_adapter(mongory_memory_pool *pool, mongory_value *pattern, mongory_value *value) {
-  if (!pattern || !value || value->type != MONGORY_TYPE_STRING) {
+  if (!pattern || !value || value->type != MONGORY_TYPE_STRING || !value->origin || py_callback_aborted()) {
     return false;
   }
   PyObject *py_str = (PyObject *)value->origin;
@@ -453,11 +593,11 @@ static bool py_mongory_regex_match_adapter(mongory_memory_pool *pool, mongory_va
 
   if (pattern->type == MONGORY_TYPE_REGEX && pattern->data.regex) {
     py_re = (PyObject *)pattern->data.regex;
-  } else if (pattern->type == MONGORY_TYPE_STRING) {
+  } else if (pattern->type == MONGORY_TYPE_STRING && pattern->origin) {
     PyObject *pat_str = (PyObject *)pattern->origin;
     PyObject *compiled = PyObject_CallMethod(py_re_module, "compile", "O", pat_str);
     if (!compiled) {
-      PyErr_Clear();
+      py_capture_callback_error_as(py_invalid_condition_error, "Invalid $regex pattern");
       return false;
     }
     py_re = py_mongory_regex_cache(pool, pattern, compiled);
@@ -467,7 +607,7 @@ static bool py_mongory_regex_match_adapter(mongory_memory_pool *pool, mongory_va
 
   PyObject *match_obj = PyObject_CallMethod(py_re, "search", "O", py_str);
   if (!match_obj) {
-    PyErr_Clear();
+    py_capture_callback_error();
     return false;
   }
   bool matched = (match_obj != Py_None);
@@ -477,10 +617,10 @@ static bool py_mongory_regex_match_adapter(mongory_memory_pool *pool, mongory_va
 
 static bool py_mongory_regex_options_match_adapter(mongory_memory_pool *pool, mongory_value *pattern,
                                                    const char *options, mongory_value *value) {
-  if (!pattern || !value || value->type != MONGORY_TYPE_STRING) {
+  if (!pattern || !value || value->type != MONGORY_TYPE_STRING || py_callback_aborted()) {
     return false;
   }
-  if (pattern->type == MONGORY_TYPE_STRING) {
+  if (pattern->type == MONGORY_TYPE_STRING && pattern->origin) {
     long flags = 0;
     for (const char *flag = options; *flag; flag++) {
       if (*flag == 'i') flags |= 2;  /* re.IGNORECASE */
@@ -490,7 +630,7 @@ static bool py_mongory_regex_options_match_adapter(mongory_memory_pool *pool, mo
     PyObject *pat_str = (PyObject *)pattern->origin;
     PyObject *compiled = PyObject_CallMethod(py_re_module, "compile", "Ol", pat_str, flags);
     if (!compiled) {
-      PyErr_Clear();
+      py_capture_callback_error_as(py_invalid_condition_error, "Invalid $regex pattern");
       return false;
     }
     py_mongory_regex_cache(pool, pattern, compiled);
@@ -519,12 +659,13 @@ static char *py_mongory_regex_stringify_adapter(mongory_memory_pool *pool, mongo
  * ============================================================================ */
 
 static bool py_mongory_custom_matcher_lookup(char *key) {
-  if (!current_compile_context || current_compile_context == Py_None) {
+  PyObject *context = current_frame ? current_frame->context : NULL;
+  if (!context || context == Py_None || py_callback_aborted()) {
     return false;
   }
-  PyObject *res = PyObject_CallMethod(current_compile_context, "has_operator", "s", key);
+  PyObject *res = PyObject_CallMethod(context, "has_operator", "s", key);
   if (!res) {
-    PyErr_Clear();
+    py_capture_callback_error();
     return false;
   }
   bool ok = PyObject_IsTrue(res) == 1;
@@ -542,53 +683,55 @@ static mongory_matcher_custom_context *py_mongory_custom_matcher_build(char *key
   PyObject *py_ctx = (PyObject *)ctx;
   PyObject *cond_obj = condition->origin ? (PyObject *)condition->origin : Py_None;
 
+  if (py_callback_aborted()) {
+    py_set_pool_error(pool, "Custom operator failed to compile");
+    return NULL;
+  }
   PyObject *built = PyObject_CallMethod(py_ctx, "build_operator", "sO", key, cond_obj);
-  if (!built || built == Py_None) {
-    if (PyErr_Occurred()) {
-      PyObject *ptype = NULL, *pvalue = NULL, *ptraceback = NULL;
-      PyErr_Fetch(&ptype, &pvalue, &ptraceback);
-      const char *msg = "Custom operator failed to compile";
-      if (pvalue) {
-        PyObject *s = PyObject_Str(pvalue);
-        if (s) {
-          const char *utf8 = PyUnicode_AsUTF8(s);
-          if (utf8) {
-            size_t len = strlen(utf8);
-            char *buf = (char *)MG_ALLOC(pool, len + 1);
-            if (buf) {
-              memcpy(buf, utf8, len + 1);
-              msg = buf;
-            }
-          }
-          Py_DECREF(s);
+  if (!built) {
+    if (!PyErr_ExceptionMatches(PyExc_Exception)) {
+      /* KeyboardInterrupt / SystemExit etc. propagate unchanged. */
+      py_capture_callback_error();
+      py_set_pool_error(pool, "Custom operator failed to compile");
+      return NULL;
+    }
+    PyObject *cause = py_fetch_exception();
+    const char *msg = "Custom operator failed to compile";
+    PyObject *s = cause ? PyObject_Str(cause) : NULL;
+    if (s) {
+      const char *utf8 = PyUnicode_AsUTF8(s);
+      if (utf8) {
+        size_t len = strlen(utf8);
+        char *buf = (char *)MG_ALLOC(pool, len + 1);
+        if (buf) {
+          memcpy(buf, utf8, len + 1);
+          msg = buf;
         }
       }
-      Py_XDECREF(ptype);
-      Py_XDECREF(pvalue);
-      Py_XDECREF(ptraceback);
-      pool->error = MG_ALLOC_PTR(pool, mongory_error);
-      if (pool->error) {
-        pool->error->type = MONGORY_ERROR_INVALID_ARGUMENT;
-        pool->error->message = msg;
-      }
+      Py_DECREF(s);
     }
-    Py_XDECREF(built);
+    PyErr_Clear();
+    if (current_frame && !current_frame->build_cause) {
+      current_frame->build_cause = cause;
+    } else {
+      Py_XDECREF(cause);
+    }
+    py_set_pool_error(pool, msg);
     return NULL;
   }
 
   /* `built` is a tuple `(name_str, predicate_callable)` */
-  if (!PyTuple_Check(built) || PyTuple_GET_SIZE(built) != 2) {
-    Py_DECREF(built);
-    return NULL;
+  const char *name_cstr = NULL;
+  if (PyTuple_Check(built) && PyTuple_GET_SIZE(built) == 2 && PyCallable_Check(PyTuple_GET_ITEM(built, 1))) {
+    name_cstr = PyUnicode_AsUTF8(PyTuple_GET_ITEM(built, 0));
   }
-  PyObject *name_obj = PyTuple_GET_ITEM(built, 0);
-  PyObject *pred_obj = PyTuple_GET_ITEM(built, 1);
-  const char *name_cstr = PyUnicode_AsUTF8(name_obj);
   if (!name_cstr) {
     PyErr_Clear();
     Py_DECREF(built);
+    py_set_pool_error(pool, "Custom operator build_operator() must return (name: str, predicate: callable)");
     return NULL;
   }
+  PyObject *pred_obj = PyTuple_GET_ITEM(built, 1);
   size_t name_len = strlen(name_cstr);
   char *copied_name = (char *)MG_ALLOC(pool, name_len + 1);
   if (copied_name) {
@@ -609,25 +752,29 @@ static mongory_matcher_custom_context *py_mongory_custom_matcher_build(char *key
 }
 
 static bool py_mongory_custom_matcher_match(void *external_matcher, mongory_value *value) {
-  if (!external_matcher) return false;
+  if (!external_matcher || py_callback_aborted()) return false;
   PyObject *pred = (PyObject *)external_matcher;
   PyObject *arg = (value && value->origin) ? (PyObject *)value->origin : Py_None;
   PyObject *exists_arg = (value != NULL) ? Py_True : Py_False;
   PyObject *res = PyObject_CallFunctionObjArgs(pred, arg, exists_arg, NULL);
   if (!res) {
-    PyErr_Clear();
+    py_capture_callback_error();
     return false;
   }
-  bool ok = PyObject_IsTrue(res) == 1;
+  int truth = PyObject_IsTrue(res);
   Py_DECREF(res);
-  return ok;
+  if (truth < 0) {
+    py_capture_callback_error();
+    return false;
+  }
+  return truth == 1;
 }
 
 /* ============================================================================
  * CMatcher Python Type Implementation
  * ============================================================================ */
 
-static void py_mongory_matcher_release(py_mongory_matcher_t *self) {
+static int py_mongory_matcher_release(py_mongory_matcher_t *self) {
   if (self->pool) {
     py_mongory_memory_pool_destroy(self->pool);
     self->pool = NULL;
@@ -644,10 +791,23 @@ static void py_mongory_matcher_release(py_mongory_matcher_t *self) {
   Py_CLEAR(self->keep_alive_list);
   Py_CLEAR(self->raw_condition);
   Py_CLEAR(self->context);
+  return 0;
+}
+
+static int CMatcher_traverse(py_mongory_matcher_t *self, visitproc visit, void *arg) {
+  Py_VISIT(self->keep_alive_list);
+  Py_VISIT(self->raw_condition);
+  Py_VISIT(self->context);
+  return 0;
 }
 
 static void CMatcher_dealloc(py_mongory_matcher_t *self) {
+  PyObject_GC_UnTrack((PyObject *)self);
   py_mongory_matcher_release(self);
+  if (self->lock) {
+    PyThread_free_lock(self->lock);
+    self->lock = NULL;
+  }
   Py_TYPE(self)->tp_free((PyObject *)self);
 }
 
@@ -655,17 +815,37 @@ static PyObject *CMatcher_new(PyTypeObject *type, PyObject *args, PyObject *kwds
   (void)args;
   (void)kwds;
   py_mongory_matcher_t *self = (py_mongory_matcher_t *)type->tp_alloc(type, 0);
-  if (self) {
-    self->matcher = NULL;
-    self->condition = NULL;
-    self->pool = NULL;
-    self->scratch_free_list = NULL;
-    self->key_cache = NULL;
-    self->keep_alive_list = NULL;
-    self->raw_condition = NULL;
-    self->context = NULL;
+  if (!self) return NULL;
+  /* tp_alloc zero-fills the remaining fields. */
+  self->lock = PyThread_allocate_lock();
+  if (!self->lock) {
+    Py_DECREF(self);
+    return PyErr_NoMemory();
   }
   return (PyObject *)self;
+}
+
+/* Recursive acquire; blocks with the GIL released so the holder can finish its Python callbacks. */
+static void py_matcher_lock(py_mongory_matcher_t *self) {
+  unsigned long tid = PyThread_get_thread_ident();
+  if (self->lock_depth > 0 && self->lock_owner == tid) {
+    self->lock_depth++;
+    return;
+  }
+  if (!PyThread_acquire_lock(self->lock, NOWAIT_LOCK)) {
+    Py_BEGIN_ALLOW_THREADS
+    PyThread_acquire_lock(self->lock, WAIT_LOCK);
+    Py_END_ALLOW_THREADS
+  }
+  self->lock_owner = tid;
+  self->lock_depth = 1;
+}
+
+static void py_matcher_unlock(py_mongory_matcher_t *self) {
+  if (--self->lock_depth == 0) {
+    self->lock_owner = 0;
+    PyThread_release_lock(self->lock);
+  }
 }
 
 static int CMatcher_init(py_mongory_matcher_t *self, PyObject *args, PyObject *kwds) {
@@ -675,12 +855,15 @@ static int CMatcher_init(py_mongory_matcher_t *self, PyObject *args, PyObject *k
   if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|O", kwlist, &cond_obj, &ctx_obj)) {
     return -1;
   }
+  /* Re-initializing would free pools that an in-flight match may still use. */
+  if (self->pool) {
+    PyErr_SetString(PyExc_TypeError, "CMatcher is already initialized");
+    return -1;
+  }
   if (!PyDict_Check(cond_obj)) {
     PyErr_SetString(py_invalid_condition_error, "Normalized condition must be a dict");
     return -1;
   }
-
-  py_mongory_matcher_release(self);
 
   self->keep_alive_list = PyList_New(0);
   self->pool = py_mongory_memory_pool_new(self);
@@ -697,25 +880,18 @@ static int CMatcher_init(py_mongory_matcher_t *self, PyObject *args, PyObject *k
   self->context = ctx_obj;
 
   mongory_memory_pool *pool_base = &self->pool->base;
+  py_call_frame frame;
+  py_frame_enter(&frame, ctx_obj);
   self->key_cache = mongory_table_new(pool_base);
   self->condition = py_to_mongory_value_deep(pool_base, cond_obj);
-
-  PyObject *prev_ctx = current_compile_context;
-  current_compile_context = ctx_obj;
   self->matcher = mongory_matcher_new(pool_base, self->condition, (void *)ctx_obj);
-  current_compile_context = prev_ctx;
+  py_frame_exit(&frame);
 
-  if (pool_base->error || !self->matcher) {
-    char err_msg[512];
-    snprintf(err_msg, sizeof(err_msg), "%s",
-             (pool_base->error && pool_base->error->message)
-                 ? pool_base->error->message
-                 : "Failed to compile condition");
+  if (py_frame_finish(&frame, pool_base, py_invalid_condition_error, "Failed to compile condition",
+                      !self->matcher || !self->key_cache || !self->condition)) {
     py_mongory_matcher_release(self);
-    PyErr_SetString(py_invalid_condition_error, err_msg);
     return -1;
   }
-
   return 0;
 }
 
@@ -737,37 +913,35 @@ static void py_scratch_release(py_mongory_matcher_t *self, py_mongory_memory_poo
   self->scratch_free_list = scratch;
 }
 
-static PyObject *CMatcher_match(py_mongory_matcher_t *self, PyObject *record) {
+static bool py_matcher_check_ready(py_mongory_matcher_t *self) {
   if (!self->matcher || !self->pool) {
     PyErr_SetString(py_mongory_error, "Matcher is not initialized");
-    return NULL;
+    return false;
   }
+  return true;
+}
+
+static PyObject *CMatcher_match(py_mongory_matcher_t *self, PyObject *record) {
+  if (!py_matcher_check_ready(self)) return NULL;
+  py_matcher_lock(self);
   py_mongory_memory_pool_t *scratch = py_scratch_acquire(self);
   if (!scratch) {
+    py_matcher_unlock(self);
     return PyErr_NoMemory();
   }
   mongory_memory_pool *scratch_base = &scratch->base;
+
+  py_call_frame frame;
+  py_frame_enter(&frame, self->context);
   mongory_value *data_val = py_to_mongory_value_shallow(scratch_base, record);
-
-  PyObject *prev_ctx = current_compile_context;
-  current_compile_context = self->context;
   bool matched = mongory_matcher_match(self->matcher, data_val);
-  current_compile_context = prev_ctx;
+  py_frame_exit(&frame);
 
-  if (scratch_base->error) {
-    char err_msg[512];
-    snprintf(err_msg, sizeof(err_msg), "%s",
-             scratch_base->error->message ? scratch_base->error->message : "Match evaluation failed");
-    py_scratch_release(self, scratch);
-    PyErr_SetString(py_invalid_condition_error, err_msg);
-    return NULL;
-  }
-
+  bool failed = py_frame_finish(&frame, scratch_base, py_invalid_condition_error, "Match evaluation failed", false);
   py_scratch_release(self, scratch);
-  if (matched) {
-    Py_RETURN_TRUE;
-  }
-  Py_RETURN_FALSE;
+  py_matcher_unlock(self);
+  if (failed) return NULL;
+  return PyBool_FromLong(matched);
 }
 
 static PyObject *py_mongory_value_to_py(mongory_value *val);
@@ -918,67 +1092,54 @@ static PyObject *py_tree_node_to_dict(mongory_value *node_val) {
 }
 
 static PyObject *CMatcher_explain_tree(py_mongory_matcher_t *self, PyObject *Py_UNUSED(ignored)) {
-  if (!self->matcher || !self->pool) {
-    PyErr_SetString(py_mongory_error, "Matcher is not initialized");
-    return NULL;
-  }
+  if (!py_matcher_check_ready(self)) return NULL;
+  py_matcher_lock(self);
   py_mongory_memory_pool_t *scratch = py_scratch_acquire(self);
-  if (!scratch) return PyErr_NoMemory();
+  if (!scratch) {
+    py_matcher_unlock(self);
+    return PyErr_NoMemory();
+  }
   mongory_memory_pool *scratch_base = &scratch->base;
 
+  py_call_frame frame;
+  py_frame_enter(&frame, self->context);
   mongory_value *tree = mongory_matcher_explain_tree(self->matcher, scratch_base);
-  if (scratch_base->error || !tree) {
-    char err_msg[512];
-    snprintf(err_msg, sizeof(err_msg), "%s",
-             (scratch_base->error && scratch_base->error->message)
-                 ? scratch_base->error->message
-                 : "Explain failed");
-    py_scratch_release(self, scratch);
-    PyErr_SetString(py_mongory_error, err_msg);
-    return NULL;
+  py_frame_exit(&frame);
+
+  PyObject *py_tree = NULL;
+  if (!py_frame_finish(&frame, scratch_base, py_mongory_error, "Explain failed", !tree)) {
+    py_tree = py_tree_node_to_dict(tree);
   }
-  PyObject *py_tree = py_tree_node_to_dict(tree);
   py_scratch_release(self, scratch);
+  py_matcher_unlock(self);
   return py_tree;
 }
 
 static PyObject *CMatcher_trace_tree(py_mongory_matcher_t *self, PyObject *record) {
-  if (!self->matcher || !self->pool) {
-    PyErr_SetString(py_mongory_error, "Matcher is not initialized");
-    return NULL;
-  }
+  if (!py_matcher_check_ready(self)) return NULL;
+  py_matcher_lock(self);
   py_mongory_memory_pool_t *trace_pool = py_mongory_memory_pool_new(self);
-  if (!trace_pool) return PyErr_NoMemory();
+  if (!trace_pool) {
+    py_matcher_unlock(self);
+    return PyErr_NoMemory();
+  }
   mongory_memory_pool *trace_base = &trace_pool->base;
 
+  py_call_frame frame;
+  py_frame_enter(&frame, self->context);
   mongory_value *data_val = py_to_mongory_value_shallow(trace_base, record);
-  if (trace_base->error) {
-    char err_msg[512];
-    snprintf(err_msg, sizeof(err_msg), "%s",
-             trace_base->error->message ? trace_base->error->message : "Trace conversion failed");
-    py_mongory_memory_pool_destroy(trace_pool);
-    PyErr_SetString(py_invalid_condition_error, err_msg);
-    return NULL;
+  mongory_value *tree = NULL;
+  if (data_val && !trace_base->error && !frame.exc) {
+    tree = mongory_matcher_trace_tree(self->matcher, data_val);
   }
+  py_frame_exit(&frame);
 
-  PyObject *prev_ctx = current_compile_context;
-  current_compile_context = self->context;
-  mongory_value *tree = mongory_matcher_trace_tree(self->matcher, data_val);
-  current_compile_context = prev_ctx;
-
-  if (trace_base->error || !tree) {
-    char err_msg[512];
-    snprintf(err_msg, sizeof(err_msg), "%s",
-             (trace_base->error && trace_base->error->message)
-                 ? trace_base->error->message
-                 : "Trace evaluation failed");
-    py_mongory_memory_pool_destroy(trace_pool);
-    PyErr_SetString(py_invalid_condition_error, err_msg);
-    return NULL;
+  PyObject *py_tree = NULL;
+  if (!py_frame_finish(&frame, trace_base, py_invalid_condition_error, "Trace evaluation failed", !tree)) {
+    py_tree = py_tree_node_to_dict(tree);
   }
-
-  PyObject *py_tree = py_tree_node_to_dict(tree);
   py_mongory_memory_pool_destroy(trace_pool);
+  py_matcher_unlock(self);
   return py_tree;
 }
 
@@ -1006,10 +1167,12 @@ static PyTypeObject CMatcherType = {
   .tp_doc = "C99 mongory-core backed compiled matcher.",
   .tp_basicsize = sizeof(py_mongory_matcher_t),
   .tp_itemsize = 0,
-  .tp_flags = Py_TPFLAGS_DEFAULT,
+  .tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
   .tp_new = CMatcher_new,
   .tp_init = (initproc)CMatcher_init,
   .tp_dealloc = (destructor)CMatcher_dealloc,
+  .tp_traverse = (traverseproc)CMatcher_traverse,
+  .tp_clear = (inquiry)py_mongory_matcher_release,
   .tp_methods = CMatcher_methods,
   .tp_getset = CMatcher_getset,
 };
@@ -1053,16 +1216,23 @@ PyMODINIT_FUNC PyInit__mongory_ext(void) {
   }
 
   py_mongory_error = PyErr_NewException("mongory._mongory_ext.MongoryError", PyExc_Exception, NULL);
+  if (!py_mongory_error) goto fail;
   PyObject *bases = PyTuple_Pack(2, py_mongory_error, PyExc_ValueError);
+  if (!bases) goto fail;
   py_invalid_condition_error = PyErr_NewException("mongory._mongory_ext.InvalidConditionError", bases, NULL);
-  Py_XDECREF(bases);
+  Py_DECREF(bases);
+  if (!py_invalid_condition_error) goto fail;
 
-  Py_INCREF(&CMatcherType);
-  PyModule_AddObject(m, "CMatcher", (PyObject *)&CMatcherType);
-  Py_INCREF(py_mongory_error);
-  PyModule_AddObject(m, "MongoryError", py_mongory_error);
-  Py_INCREF(py_invalid_condition_error);
-  PyModule_AddObject(m, "InvalidConditionError", py_invalid_condition_error);
-
+  if (PyModule_AddObjectRef(m, "CMatcher", (PyObject *)&CMatcherType) < 0 ||
+      PyModule_AddObjectRef(m, "MongoryError", py_mongory_error) < 0 ||
+      PyModule_AddObjectRef(m, "InvalidConditionError", py_invalid_condition_error) < 0) {
+    goto fail;
+  }
   return m;
+
+fail:
+  Py_CLEAR(py_mongory_error);
+  Py_CLEAR(py_invalid_condition_error);
+  Py_DECREF(m);
+  return NULL;
 }

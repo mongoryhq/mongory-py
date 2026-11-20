@@ -39,6 +39,7 @@ def build() -> Path:
     cflags = [
         "-std=c99",
         "-O3",
+        "-Wall",
         "-fPIC",
         f"-I{include_dir}",
         f"-I{CORE_DIR / 'include'}",
@@ -55,12 +56,8 @@ def build() -> Path:
     cmd = [*cc_cmd, *cflags, *sources, *ldflags, "-o", str(out_file)]
     print("Building C extension:", " ".join(shlex.quote(c) for c in cmd))
     subprocess.run(cmd, check=True)
-    print(f"Built {out_file} ({Python_version()})")
+    print(f"Built {out_file} (Python {sys.version.split()[0]})")
     return out_file
-
-
-def Python_version() -> str:
-    return f"Python {sys.version.split()[0]}"
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import glob
+import sys
+
 from setuptools import Extension, find_packages, setup
 
 core_sources = sorted(
@@ -17,7 +19,7 @@ ext_modules = [
             "ext/mongory_ext/mongory-core/src/foundations",
             "ext/mongory_ext/mongory-core/src/matchers",
         ],
-        extra_compile_args=["-std=c99", "-O3"],
+        extra_compile_args=["/O2", "/std:c11"] if sys.platform == "win32" else ["-std=c99", "-O3"],
     )
 ]
 

@@ -10,8 +10,9 @@ Handles:
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 DEFAULT_MAX_DEPTH = 64
@@ -19,6 +20,9 @@ DEFAULT_MAX_NODES = 4096
 
 OperatorPredicate = Callable[[Any, bool], bool]
 OperatorCompiler = Callable[[Any], OperatorPredicate]
+
+# Operators whose operand is a data literal (compared against records), not a nested condition.
+_LITERAL_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin"})
 
 
 def _split_dotted_key(key: str) -> list[str]:
@@ -205,38 +209,55 @@ class CompileContext:
         if parent_key in self.operators:
             return self.convert_data(value)
 
-        for typ, fn in self.converters.items():
-            if isinstance(value, typ):
-                value = fn(value)
-                break
+        if parent_key in _LITERAL_OPERATORS:
+            return self._copy_literal(value, depth=depth, seen=seen)
+
+        value = self._apply_converter(value)
 
         if isinstance(value, Mapping):
             return self._normalize_mapping(value, depth=depth + 1, seen=seen, nodes=nodes)
 
         if isinstance(value, (list, tuple)):
-            obj_id = id(value)
-            if obj_id in seen:
-                raise self._invalid_condition_error("Circular reference detected in condition")
-            if depth + 1 > self.max_depth:
-                raise self._limit_exceeded_error(f"Condition exceeds max_depth limit ({self.max_depth})")
-            seen.add(obj_id)
-            try:
-                is_in_list = parent_key in ("$in", "$nin")
+            with self._enter_container(value, depth=depth + 1, seen=seen):
                 out: list[Any] = []
                 for item in value:
-                    if not is_in_list:
-                        self._bump_node(nodes)
-                    out.append(
-                        self._normalize_value(
-                            item,
-                            parent_key="",
-                            depth=depth + 1,
-                            seen=seen,
-                            nodes=nodes,
-                        )
-                    )
+                    self._bump_node(nodes)
+                    out.append(self._normalize_value(item, parent_key="", depth=depth + 1, seen=seen, nodes=nodes))
                 return out
-            finally:
-                seen.remove(obj_id)
 
+        return value
+
+    def _apply_converter(self, value: Any) -> Any:
+        for typ, fn in self.converters.items():
+            if isinstance(value, typ):
+                return fn(value)
+        return value
+
+    @contextlib.contextmanager
+    def _enter_container(self, container: Any, *, depth: int, seen: set[int]) -> Iterator[None]:
+        obj_id = id(container)
+        if obj_id in seen:
+            raise self._invalid_condition_error("Circular reference detected in condition")
+        if depth > self.max_depth:
+            raise self._limit_exceeded_error(f"Condition exceeds max_depth limit ({self.max_depth})")
+        seen.add(obj_id)
+        try:
+            yield
+        finally:
+            seen.remove(obj_id)
+
+    def _copy_literal(self, value: Any, *, depth: int, seen: set[int]) -> Any:
+        """Copy a data operand verbatim: no dotted-key splitting, no `$and` merging."""
+        value = self._apply_converter(value)
+        if isinstance(value, Mapping):
+            with self._enter_container(value, depth=depth + 1, seen=seen):
+                result: dict[str, Any] = {}
+                for key, item in value.items():
+                    if not isinstance(key, str):
+                        raise self._invalid_condition_error(f"Condition key must be a str, got {type(key).__name__}")
+                    result[key] = self._copy_literal(item, depth=depth + 1, seen=seen)
+                return result
+        if isinstance(value, (list, tuple)):
+            with self._enter_container(value, depth=depth + 1, seen=seen):
+                return [self._copy_literal(item, depth=depth + 1, seen=seen) for item in value]
         return value

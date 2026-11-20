@@ -187,6 +187,111 @@ class TestMongoryPythonAPI(unittest.TestCase):
         with self.assertRaises(mongory.InvalidConditionError):
             mongory.compile(cyclic)
 
+    def test_literal_operands_are_not_normalized(self) -> None:
+        cond = {"x": {"$eq": {"a.b": 1}}}
+        self.assertEqual(mongory.compile(cond).condition, cond)
+        self.assertTrue(mongory.match(cond, {"x": {"a.b": 1}}))
+        self.assertFalse(mongory.match(cond, {"x": {"a": {"b": 1}}}))
+        self.assertTrue(mongory.match({"x": {"$in": [{"a.b": 1}]}}, {"x": {"a.b": 1}}))
+        self.assertTrue(mongory.match({"x": {"$nin": [{"a.b": 1}]}}, {"x": {"a": {"b": 1}}}))
+
+    def test_callback_exceptions_propagate(self) -> None:
+        class Boom(Exception):
+            pass
+
+        def raising_pred(value: Any, exists: bool) -> bool:
+            raise Boom("pred")
+
+        m = mongory.compile({"x": {"$boom": 1}}, operators={"$boom": lambda arg: raising_pred})
+        with self.assertRaises(Boom):
+            m.match({"x": 1})
+        with self.assertRaises(Boom):
+            m.trace_tree({"x": 1})
+
+        def interrupting_pred(value: Any, exists: bool) -> bool:
+            raise KeyboardInterrupt
+
+        m = mongory.compile({"x": {"$stop": 1}}, operators={"$stop": lambda arg: interrupting_pred})
+        with self.assertRaises(KeyboardInterrupt):
+            m.match({"x": 1})
+
+        def bad_converter(value: Any) -> Any:
+            raise Boom("converter")
+
+        m = mongory.compile({"x": 1}, converters={Money: bad_converter})
+        with self.assertRaises(Boom):
+            m.match({"x": Money("USD", 1)})
+
+        def bad_compiler(arg: Any) -> Any:
+            raise Boom("compiler")
+
+        with self.assertRaises(mongory.InvalidConditionError) as ctx:
+            mongory.compile({"x": {"$bad": 1}}, operators={"$bad": bad_compiler})
+        self.assertIsInstance(ctx.exception.__cause__, Boom)
+
+        with self.assertRaises(mongory.InvalidConditionError) as ctx:
+            mongory.match({"s": {"$regex": "("}}, {"s": "x"})
+        self.assertIsInstance(ctx.exception.__cause__, re.error)
+
+    def test_matcher_cycles_are_collected(self) -> None:
+        import gc
+        import weakref
+
+        class Holder:
+            matcher: Any = None
+
+        holder = Holder()
+        m = mongory.compile({"x": {"$ref": 1}}, operators={"$ref": lambda arg: (lambda v, e: holder is not None)})
+        holder.matcher = m
+        self.assertTrue(m.match({"x": 1}))
+        ref = weakref.ref(holder)
+        del holder, m
+        gc.collect()
+        self.assertIsNone(ref())
+
+    def test_concurrent_matches_with_python_callbacks(self) -> None:
+        import threading
+
+        def slow_pred(value: Any, exists: bool) -> bool:
+            sum(range(2000))  # give the interpreter a chance to switch threads
+            return value == 1
+
+        m = mongory.compile(
+            {"x": {"$slow": 1}, "tags": "a"},
+            operators={"$slow": lambda arg: slow_pred},
+        )
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                for _ in range(300):
+                    assert m.match({"x": 1, "tags": ["b", "a"]})
+                    assert not m.match({"x": 2, "tags": ["a"]})
+                    assert m.trace_tree({"x": 1, "tags": ["a"]})[0]
+            except BaseException as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        self.assertFalse(any(t.is_alive() for t in threads), "deadlock")
+        self.assertEqual(errors, [])
+
+    def test_lossy_scalars_never_compare_equal(self) -> None:
+        self.assertFalse(mongory.match({"s": "a\x00b"}, {"s": "a"}))
+        self.assertFalse(mongory.match({"n": 2**63}, {"n": 2**63 + 1}))
+        self.assertTrue(mongory.match({"n": 2**64}, {"n": 2**64}))
+        self.assertTrue(mongory.match({"n": {"$gt": 2**63}}, {"n": 2**70}))
+
+    def test_filter_validates_limit_eagerly_and_condition_is_a_copy(self) -> None:
+        m = mongory.compile({"a": {"b": 1}})
+        with self.assertRaises(mongory.InvalidOptionError):
+            m.filter([], limit="1")  # type: ignore[arg-type]
+        m.condition["a"]["b"] = 2
+        self.assertEqual(m.condition, {"a": {"b": 1}})
+
 
 if __name__ == "__main__":
     unittest.main()

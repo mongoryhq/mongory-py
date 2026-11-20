@@ -26,6 +26,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mongoryhq/mongory-spec
+          # Pinned so spec changes cannot break unrelated PRs; bump deliberately.
+          ref: 8ec15676f3a7d0d6b3b4e5d049341f9bf803c03b
           path: mongory-spec
 
       - name: Set up Python ${{ matrix.python-version }}

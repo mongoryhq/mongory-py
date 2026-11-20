@@ -26,6 +26,14 @@ __version__ = "0.1.0"
 T = TypeVar("T")
 
 
+def _copy_tree(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _copy_tree(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_copy_tree(v) for v in value]
+    return value
+
+
 class InvalidOptionError(MongoryError, ValueError):
     """Raised when compile-time configuration options (converters, operators, limits) are invalid."""
 
@@ -63,8 +71,8 @@ class Matcher:
 
     @property
     def condition(self) -> dict[str, Any]:
-        """Normalized condition dictionary."""
-        return dict(self._c_matcher.condition)
+        """Normalized condition dictionary (a fresh copy; mutating it does not affect the matcher)."""
+        return _copy_tree(self._c_matcher.condition)
 
     def match(self, record: Any) -> bool:
         """Return True if `record` satisfies the compiled query condition."""
@@ -76,11 +84,13 @@ class Matcher:
 
     def filter(self, records: Iterable[T], *, limit: int | None = None) -> Iterator[T]:
         """Lazily yield matching records from `records` (up to `limit` when specified)."""
-        if limit is not None:
-            if not isinstance(limit, int) or isinstance(limit, bool):
-                raise InvalidOptionError("limit must be an integer or None")
-            if limit <= 0:
-                return
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool)):
+            raise InvalidOptionError("limit must be an integer or None")
+        return self._filter(records, limit)
+
+    def _filter(self, records: Iterable[T], limit: int | None) -> Iterator[T]:
+        if limit is not None and limit <= 0:
+            return
         yielded = 0
         c_match = self._c_matcher.match
         for item in records:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mongory"
-version = "0.1.0"
+dynamic = ["version"]
 description = "C99-accelerated in-memory Mongo-style rule engine & query matcher with explain and trace debugging"
 readme = "README.md"
 license = { text = "MIT" }
@@ -38,6 +38,9 @@ classifiers = [
 Homepage = "https://mongoryhq.github.io/mongory-central/"
 Repository = "https://github.com/mongoryhq/mongory-py"
 Issues = "https://github.com/mongoryhq/mongory-py/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "mongory.__version__" }
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
