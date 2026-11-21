@@ -132,6 +132,8 @@ class CompileContext:
 
     def convert_data(self, value: Any) -> Any:
         for typ, fn in self.converters.items():
+            if typ is int and isinstance(value, bool):
+                continue
             if isinstance(value, typ):
                 return fn(value)
         if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -229,6 +231,8 @@ class CompileContext:
 
     def _apply_converter(self, value: Any) -> Any:
         for typ, fn in self.converters.items():
+            if typ is int and isinstance(value, bool):
+                continue
             if isinstance(value, typ):
                 return fn(value)
         return value

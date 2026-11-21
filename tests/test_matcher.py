@@ -187,6 +187,35 @@ class TestMongoryPythonAPI(unittest.TestCase):
         with self.assertRaises(mongory.InvalidConditionError):
             mongory.compile(cyclic)
 
+    def test_python_bool_vs_int_isolation(self) -> None:
+        # In Python, `True == 1`, `False == 0`, and `isinstance(True, int)` are True.
+        # Mongory must strictly distinguish bool and int across all operators and converters.
+        self.assertFalse(mongory.match({"a": True}, {"a": 1}))
+        self.assertFalse(mongory.match({"a": False}, {"a": 0}))
+        self.assertFalse(mongory.match({"a": 1}, {"a": True}))
+        self.assertFalse(mongory.match({"a": 0}, {"a": False}))
+        self.assertTrue(mongory.match({"a": {op.NE: True}}, {"a": 1}))
+        self.assertTrue(mongory.match({"a": {op.NE: 1}}, {"a": True}))
+        self.assertFalse(mongory.match({"a": {op.IN: [1, 0]}}, {"a": True}))
+        self.assertFalse(mongory.match({"a": {op.IN: [True, False]}}, {"a": 1}))
+        self.assertFalse(mongory.match({"a": {op.GTE: 0}}, {"a": True}))
+        self.assertFalse(mongory.match({"a": {op.LTE: 1}}, {"a": False}))
+
+        # Registering an `int` converter must NOT convert `bool` values
+        class BoxedInt:
+            def __init__(self, v: int) -> None:
+                self.v = v
+
+        m = mongory.compile(
+            {"flag": True, "count": 50},
+            converters={
+                int: lambda x: x + 1,
+                BoxedInt: lambda b: b.v,
+            },
+        )
+        self.assertTrue(m.match({"flag": True, "count": BoxedInt(51)}))
+        self.assertFalse(m.match({"flag": 2, "count": BoxedInt(51)}))
+
     def test_literal_operands_are_not_normalized(self) -> None:
         cond = {"x": {"$eq": {"a.b": 1}}}
         self.assertEqual(mongory.compile(cond).condition, cond)
