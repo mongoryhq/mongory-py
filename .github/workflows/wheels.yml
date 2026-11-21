@@ -74,7 +74,7 @@ jobs:
           python -m pip install build
           python -m build --sdist --outdir dist
           python -m pip install dist/*.tar.gz
-          python -c "import mongory; assert mongory.match({'a': {'$gte': 1}}, {'a': 2})"
+          python -c "import mongory; from mongory import op; assert mongory.match({'a': {op.GTE: 1}}, {'a': 2})"
 
       - name: Upload sdist
         uses: actions/upload-artifact@v4
