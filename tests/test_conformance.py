@@ -10,7 +10,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+if list((ROOT / "src" / "mongory").glob("_mongory_ext*")):
+    sys.path.insert(0, str(ROOT / "src"))
 
 import mongory  # noqa: E402
 
@@ -19,6 +20,9 @@ def _resolve_spec_dir() -> Path:
     env_dir = os.environ.get("MONGORY_SPEC_DIR")
     if env_dir:
         return Path(env_dir).resolve()
+    in_project = (ROOT / "mongory-spec").resolve()
+    if (in_project / "fixtures").is_dir():
+        return in_project
     return (ROOT.parent / "mongory-spec").resolve()
 
 

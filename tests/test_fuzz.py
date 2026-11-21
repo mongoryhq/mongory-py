@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
+if list((ROOT / "src" / "mongory").glob("_mongory_ext*")):
+    sys.path.insert(0, str(ROOT / "src"))
 
 import mongory  # noqa: E402
 
