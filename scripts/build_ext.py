@@ -28,7 +28,7 @@ def build() -> Path:
     out_file = OUT_DIR / f"_mongory_ext{ext_suffix}"
 
     sources = [
-        str(EXT_DIR / "mongory_ext.c"),
+        *sorted(glob.glob(str(EXT_DIR / "*.c"))),
         *sorted(glob.glob(str(CORE_DIR / "src" / "foundations" / "*.c"))),
         *sorted(glob.glob(str(CORE_DIR / "src" / "matchers" / "*.c"))),
     ]
@@ -42,6 +42,7 @@ def build() -> Path:
         "-Wall",
         "-fPIC",
         f"-I{include_dir}",
+        f"-I{EXT_DIR}",
         f"-I{CORE_DIR / 'include'}",
         f"-I{CORE_DIR / 'src' / 'foundations'}",
         f"-I{CORE_DIR / 'src' / 'matchers'}",

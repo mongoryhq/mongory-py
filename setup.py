@@ -5,6 +5,7 @@ import sys
 
 from setuptools import Extension, find_packages, setup
 
+ext_sources = sorted(glob.glob("ext/mongory_ext/*.c"))
 core_sources = sorted(
     glob.glob("ext/mongory_ext/mongory-core/src/foundations/*.c")
     + glob.glob("ext/mongory_ext/mongory-core/src/matchers/*.c")
@@ -13,8 +14,9 @@ core_sources = sorted(
 ext_modules = [
     Extension(
         name="mongory._mongory_ext",
-        sources=["ext/mongory_ext/mongory_ext.c", *core_sources],
+        sources=[*ext_sources, *core_sources],
         include_dirs=[
+            "ext/mongory_ext",
             "ext/mongory_ext/mongory-core/include",
             "ext/mongory_ext/mongory-core/src/foundations",
             "ext/mongory_ext/mongory-core/src/matchers",
