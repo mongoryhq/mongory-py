@@ -240,6 +240,37 @@ static mongory_value *py_mongory_table_get(mongory_table *self, char *key) {
   return py_to_mongory_value_shallow(table->base.pool, val);
 }
 
+static bool py_mongory_table_each(mongory_table *self, void *acc, mongory_table_each_pair_callback_func callback) {
+  py_mongory_table_t *table = (py_mongory_table_t *)self;
+  Py_ssize_t pos = 0;
+  PyObject *key = NULL;
+  PyObject *val = NULL;
+  while (PyDict_Next(table->py_dict, &pos, &key, &val)) {
+    const char *key_cstr = NULL;
+    PyObject *tmp_str = NULL;
+    if (PyUnicode_Check(key)) {
+      key_cstr = PyUnicode_AsUTF8(key);
+    } else {
+      tmp_str = PyObject_Str(key);
+      if (tmp_str) {
+        key_cstr = PyUnicode_AsUTF8(tmp_str);
+      }
+    }
+    if (!key_cstr) {
+      if (PyErr_Occurred()) PyErr_Clear();
+      Py_XDECREF(tmp_str);
+      return false;
+    }
+    mongory_value *mg_val = py_to_mongory_value_shallow(self->pool, val);
+    bool cont = callback((char *)key_cstr, mg_val, acc);
+    Py_XDECREF(tmp_str);
+    if (!cont) {
+      return false;
+    }
+  }
+  return true;
+}
+
 mongory_value *py_mongory_table_wrap(mongory_memory_pool *pool, PyObject *dict_obj) {
   py_mongory_table_t *table = MG_ALLOC_PTR(pool, py_mongory_table_t);
   if (!table) return NULL;
@@ -248,7 +279,7 @@ mongory_value *py_mongory_table_wrap(mongory_memory_pool *pool, PyObject *dict_o
   table->base.get = py_mongory_table_get;
   table->base.set = NULL;
   table->base.del = NULL;
-  table->base.each = NULL;
+  table->base.each = py_mongory_table_each;
   table->py_dict = dict_obj;
   table->base.count = (size_t)PyDict_Size(dict_obj);
   table->owner = py_pool ? py_pool->owner : NULL;
@@ -271,6 +302,19 @@ static mongory_value *py_mongory_array_get(mongory_array *self, size_t index) {
   return py_to_mongory_value_shallow(self->pool, item);
 }
 
+static bool py_mongory_array_each(mongory_array *self, void *acc, mongory_array_callback_func callback) {
+  py_mongory_array_t *arr = (py_mongory_array_t *)self;
+  Py_ssize_t len = arr->is_tuple ? PyTuple_GET_SIZE(arr->py_seq) : PyList_GET_SIZE(arr->py_seq);
+  for (Py_ssize_t i = 0; i < len; i++) {
+    PyObject *item = arr->is_tuple ? PyTuple_GET_ITEM(arr->py_seq, i) : PyList_GET_ITEM(arr->py_seq, i);
+    mongory_value *mg_val = py_to_mongory_value_shallow(self->pool, item);
+    if (!callback(mg_val, acc)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_obj, bool is_tuple) {
   py_mongory_array_t *arr = MG_ALLOC_PTR(pool, py_mongory_array_t);
   if (!arr) return NULL;
@@ -279,7 +323,7 @@ mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_ob
   arr->base.get = py_mongory_array_get;
   arr->base.set = NULL;
   arr->base.push = NULL;
-  arr->base.each = NULL;
+  arr->base.each = py_mongory_array_each;
   arr->py_seq = seq_obj;
   arr->is_tuple = is_tuple;
   arr->base.count = (size_t)(is_tuple ? PyTuple_GET_SIZE(seq_obj) : PyList_GET_SIZE(seq_obj));
