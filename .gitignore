@@ -15,3 +15,5 @@ dist/
 .venv/
 venv/
 .DS_Store
+.vscode/
+uv.lock
