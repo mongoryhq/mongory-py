@@ -21,7 +21,7 @@ from ._normalize import (
 )
 from ._tree import render_explain_tree, render_trace_tree
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 T = TypeVar("T")
 
@@ -186,42 +186,6 @@ def match(
     ).match(record)
 
 
-def and_(*conditions: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Combine multiple condition dicts with `$and` (returns `{}` when all inputs are empty/None)."""
-    branches: list[dict[str, Any]] = []
-    for cond in conditions:
-        if cond is None:
-            continue
-        if not isinstance(cond, Mapping):
-            raise InvalidConditionError("and_() arguments must be mappings or None")
-        if len(cond) == 0:
-            continue
-        if len(cond) == 1 and "$and" in cond and isinstance(cond["$and"], list):
-            branches.extend(cond["$and"])
-        else:
-            branches.append(dict(cond))
-    if not branches:
-        return {}
-    if len(branches) == 1:
-        return branches[0]
-    return {"$and": branches}
-
-
-def or_(*conditions: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Combine multiple condition dicts with `$or` (returns `{'$or': []}` when empty, which never matches)."""
-    branches: list[dict[str, Any]] = []
-    for cond in conditions:
-        if cond is None:
-            continue
-        if not isinstance(cond, Mapping):
-            raise InvalidConditionError("or_() arguments must be mappings or None")
-        if len(cond) == 1 and "$or" in cond and isinstance(cond["$or"], list):
-            branches.extend(cond["$or"])
-        else:
-            branches.append(dict(cond))
-    return {"$or": branches}
-
-
 __all__ = [
     "__version__",
     "DEFAULT_MAX_DEPTH",
@@ -235,8 +199,6 @@ __all__ = [
     "Matcher",
     "compile",
     "match",
-    "and_",
-    "or_",
     "op",
     "operator",
 ]

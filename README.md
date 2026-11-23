@@ -43,13 +43,13 @@ is_adult = mongory.match({"age": {op.GTE: 18}}, users[0])  # True
 
 # 2. Compile once, reuse across collections / streams
 matcher = mongory.compile(
-    mongory.and_(
-        {"active": True},
-        mongory.or_(
+    {
+        "active": True,
+        op.OR: [
             {"tags": "py"},
             {"name": re.compile(r"^b", re.IGNORECASE)},
-        ),
-    )
+        ],
+    }
 )
 
 matched = list(matcher.filter(users))        # [Ann, Bob]

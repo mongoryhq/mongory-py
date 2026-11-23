@@ -76,10 +76,12 @@ class TestMongoryPythonAPI(unittest.TestCase):
             {"name": "Dan", "age": 25, "tags": ("py",), "active": True},
         ]
         m = mongory.compile(
-            mongory.and_(
-                {"active": True},
-                mongory.or_({"tags": "py"}, {"age": {op.LT: 18}}),
-            )
+            {
+                op.AND: [
+                    {"active": True},
+                    {op.OR: [{"tags": "py"}, {"age": {op.LT: 18}}]},
+                ]
+            }
         )
 
         # __call__ works directly with built-in filter()
@@ -93,7 +95,7 @@ class TestMongoryPythonAPI(unittest.TestCase):
         self.assertEqual(m.find_one(users), users[0])
         self.assertIsNone(mongory.compile({"age": {op.GT: 100}}).find_one(users))
         self.assertTrue(m.any(users))
-        self.assertFalse(mongory.compile(mongory.or_()).any(users))
+        self.assertFalse(mongory.compile({op.OR: []}).any(users))
         self.assertEqual(m.count(users), 3)
         self.assertTrue(mongory.match(None, {"anything": 1}))
 
