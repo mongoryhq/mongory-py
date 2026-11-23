@@ -121,6 +121,11 @@ python3 scripts/build_ext.py
 MONGORY_SPEC_DIR=../mongory-spec python3 -m unittest discover -s tests -v
 ```
 
+## Security & Untrusted Input
+
+- **Engine protections**: Pure in-memory C99 evaluation (no SQL, no `$where`/`eval`), arena memory pool limits, and configurable `max_depth` (default `64`) / `max_nodes` (default `4096`) compile budgets.
+- **Application responsibility**: When accepting query conditions from untrusted callers, validate scalar types (to prevent operator injection such as `{"$ne": None}`), allowlist queryable fields, and restrict untrusted `$regex` patterns (Python `re` uses backtracking).
+
 ## License
 
 MIT
