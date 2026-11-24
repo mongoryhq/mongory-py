@@ -15,6 +15,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 import mongory  # noqa: E402
 
+try:
+    from mongoquery import Query as MongoQuery  # type: ignore[import-not-found]
+except ImportError:
+    MongoQuery = None
+
 N = 10_000
 ROUNDS = 20
 
@@ -188,17 +193,34 @@ def _count_py(records: list[dict[str, Any]], pred: Callable[[dict[str, Any]], bo
 
 def run_suite(label: str, records: list[dict[str, Any]]) -> None:
     print(f"\n=== {label} ({N} records x {ROUNDS} rounds) ===")
-    print(f"{'Query':<20} {'plain_fast':>12} {'plain_safe':>12} {'mongory(C)':>12} {'mongory/safe':>13} {'matched (safe/mg)':>20}")
-    print("-" * 95)
+    if MongoQuery is not None:
+        print(
+            f"{'Query':<20} {'plain_fast':>11} {'plain_safe':>11} {'mongory(C)':>11} {'mongoquery':>11} {'vs safe':>9} {'vs mq':>9}"
+        )
+        print("-" * 88)
+    else:
+        print(
+            f"{'Query':<20} {'plain_fast':>12} {'plain_safe':>12} {'mongory(C)':>12} {'mongory/safe':>13} {'matched (safe/mg)':>20}"
+        )
+        print("-" * 95)
     for name, cond, fast_fn, safe_fn in CASES:
         matcher = mongory.compile(cond)
         fast_ns, _ = _measure(lambda: _count_py(records, fast_fn))
         safe_ns, safe_m = _measure(lambda: _count_py(records, safe_fn))
         mg_ns, mg_m = _measure(lambda: matcher.count(records))
-        ratio = mg_ns / safe_ns
-        print(
-            f"{name:<20} {fast_ns:>9.1f} ns {safe_ns:>9.1f} ns {mg_ns:>9.1f} ns {ratio:>12.2f}x {f'{safe_m}/{mg_m}':>20}"
-        )
+        if MongoQuery is not None:
+            mq = MongoQuery(cond)
+            mq_ns, _ = _measure(lambda: _count_py(records, mq.match))
+            vs_safe = safe_ns / mg_ns
+            vs_mq = mq_ns / mg_ns
+            print(
+                f"{name:<20} {fast_ns:>8.1f} ns {safe_ns:>8.1f} ns {mg_ns:>8.1f} ns {mq_ns:>8.1f} ns {vs_safe:>8.2f}x {vs_mq:>8.2f}x"
+            )
+        else:
+            ratio = mg_ns / safe_ns
+            print(
+                f"{name:<20} {fast_ns:>9.1f} ns {safe_ns:>9.1f} ns {mg_ns:>9.1f} ns {ratio:>12.2f}x {f'{safe_m}/{mg_m}':>20}"
+            )
 
 
 if __name__ == "__main__":

@@ -127,6 +127,10 @@ python3 scripts/build_ext.py
 MONGORY_SPEC_DIR=../mongory-spec python3 -m unittest discover -s tests -v
 ```
 
+## Performance & Benchmarks
+
+See [docs/performance.md](docs/performance.md) and [`scripts/bench.py`](scripts/bench.py) for reproducible benchmarks against hand-written Python and `mongoquery` (**9.2x–25.8x faster** than `mongoquery`).
+
 ## Security & Untrusted Input
 
 - **Engine protections**: Pure in-memory C99 evaluation (no SQL, no `$where`/`eval`), arena memory pool limits, and configurable `max_depth` (default `64`) / `max_nodes` (default `4096`) compile budgets.
