@@ -21,7 +21,7 @@ from ._normalize import (
 )
 from ._tree import render_explain_tree, render_trace_tree
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 T = TypeVar("T")
 

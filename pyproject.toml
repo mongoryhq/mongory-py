@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mongory"
-version = "0.2.0"
+version = "0.2.1"
 description = "C99-accelerated in-memory Mongo-style rule engine & query matcher with explain and trace debugging"
 readme = "README.md"
 license = { text = "MIT" }
