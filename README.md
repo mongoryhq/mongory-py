@@ -1,5 +1,11 @@
 # mongory-py
 
+[![PyPI](https://img.shields.io/pypi/v/mongory)](https://pypi.org/project/mongory/)
+[![CI](https://github.com/mongoryhq/mongory-py/actions/workflows/ci.yml/badge.svg)](https://github.com/mongoryhq/mongory-py/actions/workflows/ci.yml)
+[![mongory-spec](https://github.com/mongoryhq/mongory-py/actions/workflows/spec-conformance.yml/badge.svg)](https://github.com/mongoryhq/mongory-py/actions/workflows/spec-conformance.yml)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **C99-accelerated Python in-memory Mongo-style rule engine & query matcher** with built-in **Explain & Trace** debugging — powered by [`mongory-core`](https://github.com/mongoryhq/mongory-core) and verified against [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
 
 **[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
