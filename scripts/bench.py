@@ -104,6 +104,8 @@ def _match_dot_path(obj: Any, k1: str, k2: str, pred: Callable[[Any], bool]) -> 
 
 
 RE_USER = re.compile(r"^user[a-f]$")
+LARGE_IN_TARGETS = ["usera", "userb"] + [f"other-{i}" for i in range(2, 500)]
+LARGE_IN_SET = set(LARGE_IN_TARGETS)
 
 CASES: list[tuple[str, dict[str, Any], Callable[[dict[str, Any]], bool], Callable[[dict[str, Any]], bool]]] = [
     (
@@ -142,6 +144,12 @@ CASES: list[tuple[str, dict[str, Any], Callable[[dict[str, Any]], bool], Callabl
         {"tags": {"$in": ["go", "rust"]}},
         lambda r: isinstance(r.get("tags"), list) and any(t in ("go", "rust") for t in r["tags"]),
         lambda r: _match_maybe_array(_get_prop(r, "tags"), lambda v: v in ("go", "rust")),
+    ),
+    (
+        "large_in_500",
+        {"name": {"$in": LARGE_IN_TARGETS}},
+        lambda r: isinstance(r.get("name"), str) and r["name"] in LARGE_IN_SET,
+        lambda r: _match_maybe_array(_get_prop(r, "name"), lambda v: v in LARGE_IN_SET),
     ),
     (
         "regex",
