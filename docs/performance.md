@@ -47,8 +47,8 @@ Each case compares:
 
 ### Key Takeaways
 
-- **vs Peer PyPI Library (`mongoquery`)**: `mongory` is **9.2x–24.1x faster** on standard queries, and **2,191x–2,314x faster** on `large_in_500` thanks to `mongory-core`'s compiled O(1) hash lookup.
+- **vs Peer PyPI Library (`mongoquery`)**: `mongory` is **9.2x-24.1x faster** on standard queries, and **2,191x-2,314x faster** on `large_in_500` thanks to `mongory-core`'s compiled O(1) hash lookup.
 - **vs Hand-Written Python (`plain_fast`)**: `mongory` stays roughly **on par to ~1.7x faster** on structural/numeric filters (`regex` alone is slower because the C adapter delegates back to Python's `re` engine), while providing reusable JSON rules and `explain`/`trace` debugging.
-- **vs Semantics-Equivalent Pure Python (`plain_safe`)**: `mongory` is **1.29x–2.84x faster** across every case.
+- **vs Semantics-Equivalent Pure Python (`plain_safe`)**: `mongory` is **1.25x-2.82x faster** across every case.
 
 > For cross-language benchmarks (`mongory-go`, `mongory-js`, `mongory-rb`), see [Mongory Central](https://mongoryhq.github.io/mongory-central/#benchmarks).

@@ -7,7 +7,7 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Zero-dependency, C99-backed in-memory MongoDB-style query & rule engine for Python** — powered by [`mongory-core`](https://github.com/mongoryhq/mongory-core) with built-in `explain` / `trace` debugging and cross-language parity via [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
+**Zero-dependency, C99-backed in-memory MongoDB-style query and rule engine for Python**, powered by [`mongory-core`](https://github.com/mongoryhq/mongory-core) with built-in `explain` / `trace` debugging and cross-language parity via [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
 
 **[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
 
@@ -21,7 +21,7 @@
 pip install mongory
 ```
 
-Requires Python `3.10+`. Ships precompiled wheels for Linux (`x86_64`/`aarch64`, glibc & musl), macOS (Intel & Apple Silicon), and Windows AMD64 with zero runtime Python dependencies and full PEP 561 `.pyi` type stubs.
+The package requires Python `3.10+` and ships precompiled wheels for Linux (`x86_64`/`aarch64`, glibc and musl), macOS (Intel and Apple Silicon), and Windows AMD64 with zero runtime Python dependencies and full PEP 561 `.pyi` type stubs.
 
 ## Quick Start
 
