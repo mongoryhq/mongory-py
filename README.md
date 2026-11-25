@@ -1,6 +1,7 @@
 # mongory-py
 
 [![PyPI](https://img.shields.io/pypi/v/mongory)](https://pypi.org/project/mongory/)
+[![API Docs](https://img.shields.io/badge/API%20Docs-pdoc-blue)](https://mongoryhq.github.io/mongory-py/)
 [![CI](https://github.com/mongoryhq/mongory-py/actions/workflows/ci.yml/badge.svg)](https://github.com/mongoryhq/mongory-py/actions/workflows/ci.yml)
 [![mongory-spec](https://github.com/mongoryhq/mongory-py/actions/workflows/spec-conformance.yml/badge.svg)](https://github.com/mongoryhq/mongory-py/actions/workflows/spec-conformance.yml)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
