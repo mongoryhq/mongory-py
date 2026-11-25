@@ -6,22 +6,13 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**C99-accelerated Python in-memory Mongo-style rule engine & query matcher** with built-in **Explain & Trace** debugging — powered by [`mongory-core`](https://github.com/mongoryhq/mongory-core) and verified against [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
+**Zero-dependency, C99-backed in-memory MongoDB-style query & rule engine for Python** — powered by [`mongory-core`](https://github.com/mongoryhq/mongory-core) with built-in `explain` / `trace` debugging and cross-language parity via [`mongory-spec`](https://github.com/mongoryhq/mongory-spec).
 
 **[Try the Interactive Playground & Visual Explain/Trace Debugger ↗](https://mongoryhq.github.io/mongory-central/)**
 
 [![Mongory Playground & Visual Trace](https://mongoryhq.github.io/mongory-central/playground-trace.png)](https://mongoryhq.github.io/mongory-central/)
 
-> **Zero database required:** Compile a PyMongo-style `dict` filter once into a reusable `mongory.Matcher` backed by `mongory-core`'s C99 arena engine and evaluate Python `dict`s, `dataclass`es, or custom objects in memory.  
-> **Ecosystem:** [Interactive Playground](https://mongoryhq.github.io/mongory-central/) · [`mongory-go` (Go)](https://github.com/mongoryhq/mongory-go) · [`mongory-js` (TypeScript/JS)](https://github.com/mongoryhq/mongory-js) · [`mongory-rb` (Ruby)](https://github.com/mongoryhq/mongory-rb) · [`mongory-core` (C99)](https://github.com/mongoryhq/mongory-core) · [`mongory-spec`](https://github.com/mongoryhq/mongory-spec)
-
-## Features
-
-- **Native C99 Engine (`mongory-core`)**: Shallow `PyObject*` wrapping with arena memory pools and zero runtime Python dependencies.
-- **PyMongo & `re.compile` Ergonomics**: Pass raw `dict` conditions (including compiled `re.Pattern` objects), use `mongory.compile(cond)` or one-shot `mongory.match(cond, record)`, and pass `Matcher` directly to Python's built-in `filter(matcher, records)`.
-- **Operator Constants (`mongory.op` / `mongory.operator`)**: Optional uppercase constants (`op.GTE`, `op.IN`, `op.OR`, `op.ELEM_MATCH`, etc.) for typo-free conditions with zero overhead.
-- **Built-in `explain()` / `trace()` & `explain_tree()` / `trace_tree()`**: Inspect priority-ordered execution plans and per-record `PASS` / `FAIL` / `SKIP` evaluation trees.
-- **Compile-Scoped Extensions & Safety Limits**: Custom `converters`, custom `operators`, `max_depth` (default `64`), `max_nodes` (default `4096`), and full PEP 561 `.pyi` type stubs.
+> **Ecosystem:** [Playground](https://mongoryhq.github.io/mongory-central/) · [`mongory-go` (Go)](https://github.com/mongoryhq/mongory-go) · [`mongory-js` (TypeScript/JS)](https://github.com/mongoryhq/mongory-js) · [`mongory-rb` (Ruby)](https://github.com/mongoryhq/mongory-rb) · [`mongory-core` (C99)](https://github.com/mongoryhq/mongory-core) · [`mongory-spec`](https://github.com/mongoryhq/mongory-spec)
 
 ## Installation
 
@@ -29,7 +20,7 @@
 pip install mongory
 ```
 
-Requires Python 3.10 or later.
+Requires Python `3.10+`. Ships precompiled wheels for Linux (`x86_64`/`aarch64`, glibc & musl), macOS (Intel & Apple Silicon), and Windows AMD64 with zero runtime Python dependencies and full PEP 561 `.pyi` type stubs.
 
 ## Quick Start
 
@@ -67,7 +58,26 @@ total = matcher.count(users)                 # 2
 via_builtin = list(filter(matcher, users))   # [Ann, Bob]
 ```
 
+## Why Mongory? (and When Not to Use It)
+
+- **Use Mongory when**: filter/routing rules come from JSON/DB/config/API, need identical semantics across Python + TS/Go/Ruby services, or need `explain()` / `trace()` to show why a record failed.
+- **Don't use Mongory when**: your filter is a simple static list comprehension hardcoded in Python, or when you need a full aggregation pipeline (`$group`, `$lookup`, `$project`).
+- **Python ergonomics built in**: immune to Python's `bool <: int` trap (`True != 1`, `False != 0`), supports `re.compile` patterns, optional `mongory.op` constants, and `dict` / `dataclass` / custom object inputs via shallow `PyObject*` adapters.
+
+## Benchmark Snapshot
+
+Measured on Apple M3 (macOS arm64, Python `3.14.5`, `10,000` records x 20 rounds; full monomorphic & polymorphic tables in [docs/performance.md](docs/performance.md)):
+
+| Case (Monomorphic) | `plain_fast` | `plain_safe` | `mongory` (C99) | `mongoquery` (`1.4.3`) | `mongory` vs `mongoquery` |
+|---|---:|---:|---:|---:|---:|
+| `simple` (`age >= 18`) | `139.9 ns` | `242.5 ns` | `86.8 ns` | `1,543.1 ns` | **17.8x faster** |
+| `or` (`age >= 18` or `status == "active"`) | `157.2 ns` | `303.1 ns` | `123.3 ns` | `2,722.4 ns` | **22.1x faster** |
+| `in_array_field` (`tags $in ["go", "rust"]`) | `238.5 ns` | `303.8 ns` | `140.8 ns` | `2,213.3 ns` | **15.7x faster** |
+| `large_in_500` (`name $in [500 items]`) | `80.3 ns` | `215.4 ns` | `111.6 ns` | `258,170.1 ns` | **2,314x faster** |
+
 ## Debugging with `explain` & `trace`
+
+Sibling conditions are automatically cost-sorted so cheap `$eq`/`$exists`/`$in` checks short-circuit before `$regex` or array scans:
 
 ```python
 matcher = mongory.compile({
@@ -79,7 +89,7 @@ matcher = mongory.compile({
 print(matcher.explain())
 
 matched, trace_str = matcher.trace({"name": "Bob", "age": 15, "active": False})
-print(matched)  # False
+print(matched)    # False
 print(trace_str)
 
 # Or retrieve structured dicts for logging / UIs:
@@ -120,16 +130,15 @@ matcher = mongory.compile(
 print(matcher.match({"price": Money("USD", 150), "tags": {"vip", "new"}}))  # True
 ```
 
-## Development & Conformance Tests
+## Development, Conformance & Benchmarks
 
 ```bash
 python3 scripts/build_ext.py
 MONGORY_SPEC_DIR=../mongory-spec python3 -m unittest discover -s tests -v
+python3 scripts/bench.py
 ```
 
-## Performance & Benchmarks
-
-See [docs/performance.md](docs/performance.md) and [`scripts/bench.py`](scripts/bench.py) for reproducible benchmarks against hand-written Python and `mongoquery` (**9.2x–25.8x faster** than `mongoquery`).
+See [docs/performance.md](docs/performance.md) for full benchmark tables and reproduction instructions (including `mongoquery`).
 
 ## Security & Untrusted Input
 
