@@ -32,7 +32,12 @@ jobs:
       - name: Generate pdoc HTML
         env:
           PYTHONPATH: src
-        run: pdoc mongory -o docs-api
+        run: >-
+          pdoc mongory -o docs-api
+          --no-show-source
+          --logo "https://mongoryhq.github.io/mongory-central/mongoryhq-icon.png"
+          --logo-link "https://mongoryhq.github.io/mongory-central/"
+          --footer-text "Mongory (Python) — C99-backed in-memory MongoDB-style query engine"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs-api

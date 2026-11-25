@@ -1,7 +1,41 @@
-"""Mongory (Python): C99-backed in-memory Mongo-style rule engine & query matcher.
+"""# Mongory (Python)
 
-Powered by `mongory-core` (C99) via the `_mongory_ext` CPython C-API extension,
-and cross-checked against `mongory-spec`.
+Zero-dependency, C99-backed in-memory MongoDB-style query & rule engine for Python,
+powered by `mongory-core` and verified against `mongory-spec`.
+
+## Quick Start
+
+```python
+import re
+import mongory
+from mongory import op
+
+users = [
+    {"name": "Ann", "age": 30, "tags": ["py", "go"], "active": True},
+    {"name": "Bob", "age": 15, "tags": ["ruby"], "active": True},
+]
+
+# One-shot evaluation
+mongory.match({"age": {op.GTE: 18}}, users[0])  # True
+
+# Compile once, reuse across collections / streams
+matcher = mongory.compile({
+    "active": True,
+    op.OR: [{"tags": "py"}, {"name": re.compile(r"^b", re.IGNORECASE)}],
+})
+
+matched = list(matcher.filter(users))     # [Ann, Bob]
+ok, trace = matcher.trace(users[0])       # PASS / FAIL / SKIP tree
+```
+
+## Key Entry Points
+
+- `compile(condition, ...)` — Compile a MongoDB-style dict condition into a reusable `Matcher`.
+- `match(condition, record, ...)` — One-shot convenience helper.
+- `Matcher` — Compiled matcher with `.match()`, `.filter()`, `.filter_list()`, `.find_one()`, `.any()`, `.count()`, `.explain()`, `.trace()`, `.explain_tree()`, and `.trace_tree()`.
+- `mongory.op` — Typo-free operator constants (`op.GTE`, `op.IN`, `op.OR`, `op.ELEM_MATCH`, ...).
+
+Links: [GitHub](https://github.com/mongoryhq/mongory-py) · [Interactive Playground](https://mongoryhq.github.io/mongory-central/) · [Performance Benchmarks](https://github.com/mongoryhq/mongory-py/blob/main/docs/performance.md)
 """
 
 from __future__ import annotations
