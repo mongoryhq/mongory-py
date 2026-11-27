@@ -1,4 +1,4 @@
-name: Deploy Python API Docs
+name: Deploy API Docs
 
 on:
   push:
