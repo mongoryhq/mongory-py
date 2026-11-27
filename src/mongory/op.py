@@ -33,6 +33,7 @@ PRESENT: Final[str] = "$present"
 # Logical operators
 AND: Final[str] = "$and"
 OR: Final[str] = "$or"
+NOR: Final[str] = "$nor"
 NOT: Final[str] = "$not"
 
 # Array operators
@@ -57,6 +58,7 @@ __all__ = [
     "PRESENT",
     "AND",
     "OR",
+    "NOR",
     "NOT",
     "ELEM_MATCH",
     "EVERY",

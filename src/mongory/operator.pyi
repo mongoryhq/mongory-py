@@ -11,6 +11,7 @@ from .op import (
     LTE as LTE,
     NE as NE,
     NIN as NIN,
+    NOR as NOR,
     NOT as NOT,
     OPTIONS as OPTIONS,
     OR as OR,

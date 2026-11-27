@@ -30,6 +30,8 @@ def _gen_val(rng: random.Random, depth: int = 0) -> Any:
 def _gen_cond(rng: random.Random, depth: int = 0) -> dict[str, Any]:
     if depth >= 2:
         return {rng.choice(["a", "b", "0"]): rng.choice(SCALARS)}
+    if depth == 0 and rng.random() < 0.2:
+        return {"$nor": [_gen_cond(rng, depth + 1) for _ in range(rng.randint(0, 2))]}
     out: dict[str, Any] = {}
     for _ in range(rng.randint(0, 3)):
         k = rng.choice(KEYS)

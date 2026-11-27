@@ -13,6 +13,7 @@ from .op import (
     LTE,
     NE,
     NIN,
+    NOR,
     NOT,
     OPTIONS,
     OR,
