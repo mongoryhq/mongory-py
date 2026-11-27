@@ -318,7 +318,6 @@ static bool py_mongory_array_each(mongory_array *self, void *acc, mongory_array_
 mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_obj, bool is_tuple) {
   py_mongory_array_t *arr = MG_ALLOC_PTR(pool, py_mongory_array_t);
   if (!arr) return NULL;
-  py_mongory_memory_pool_t *py_pool = (py_mongory_memory_pool_t *)pool;
   arr->base.pool = pool;
   arr->base.get = py_mongory_array_get;
   arr->base.set = NULL;
@@ -327,18 +326,12 @@ mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_ob
   arr->py_seq = seq_obj;
   arr->is_tuple = is_tuple;
   arr->base.count = (size_t)(is_tuple ? PyTuple_GET_SIZE(seq_obj) : PyList_GET_SIZE(seq_obj));
-  arr->owner = py_pool ? py_pool->owner : NULL;
   mongory_value *mg_val = mongory_value_wrap_a(pool, &arr->base);
   if (mg_val) {
     mg_val->origin = (void *)seq_obj;
     mg_val->to_str = py_mongory_value_to_cstr;
   }
   return mg_val;
-}
-
-void *py_value_converter_recover_adapter(mongory_memory_pool *pool, mongory_value *value) {
-  (void)pool;
-  return value ? value->origin : NULL;
 }
 
 typedef struct {

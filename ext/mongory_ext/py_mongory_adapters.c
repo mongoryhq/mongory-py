@@ -4,10 +4,6 @@
  */
 #include "mongory_ext_internal.h"
 
-static mongory_value *py_value_converter_deep_adapter(mongory_memory_pool *pool, void *value) {
-  return py_to_mongory_value_deep(pool, (PyObject *)value);
-}
-
 static mongory_value *py_value_converter_shallow_adapter(mongory_memory_pool *pool, void *value) {
   return py_to_mongory_value_shallow(pool, (PyObject *)value);
 }
@@ -234,9 +230,7 @@ void py_mongory_register_adapters(void) {
   mongory_regex_options_func_set(py_mongory_regex_options_match_adapter);
   mongory_regex_stringify_func_set(py_mongory_regex_stringify_adapter);
 
-  mongory_value_converter_deep_convert_set(py_value_converter_deep_adapter);
   mongory_value_converter_shallow_convert_set(py_value_converter_shallow_adapter);
-  mongory_value_converter_recover_set(py_value_converter_recover_adapter);
 
   mongory_custom_matcher_lookup_func_set(py_mongory_custom_matcher_lookup);
   mongory_custom_matcher_build_func_set(py_mongory_custom_matcher_build);

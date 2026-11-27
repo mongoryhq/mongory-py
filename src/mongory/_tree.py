@@ -17,7 +17,7 @@ def _format_node_label(node: dict[str, Any]) -> str:
     name = node.get("name", "")
     if name == "Field" and "field" in node:
         return f"Field({_format_val(node['field'])})"
-    if name in ("And", "Or", "Not", "ElemMatch", "Every", "ArrayRecord"):
+    if name in ("And", "Or", "Nor", "Not", "ElemMatch", "Every"):
         return name
     cond = node.get("condition")
     return f"{name}({_format_val(cond)})"

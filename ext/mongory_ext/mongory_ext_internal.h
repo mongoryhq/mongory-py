@@ -52,7 +52,6 @@ typedef struct py_mongory_array_t {
   mongory_array base;
   PyObject *py_seq;
   bool is_tuple;
-  py_mongory_matcher_t *owner;
 } py_mongory_array_t;
 
 /*
@@ -109,7 +108,6 @@ mongory_value *py_to_mongory_value_deep(mongory_memory_pool *pool, PyObject *obj
 mongory_value *py_to_mongory_value_shallow(mongory_memory_pool *pool, PyObject *obj);
 mongory_value *py_mongory_table_wrap(mongory_memory_pool *pool, PyObject *dict_obj);
 mongory_value *py_mongory_array_wrap(mongory_memory_pool *pool, PyObject *seq_obj, bool is_tuple);
-void *py_value_converter_recover_adapter(mongory_memory_pool *pool, mongory_value *value);
 PyObject *py_mongory_value_to_py(mongory_value *val);
 
 /* Core regex, value converter & custom matcher adapters (py_mongory_adapters.c) */
