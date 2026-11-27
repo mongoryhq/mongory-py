@@ -17,8 +17,7 @@ PyObject *py_re_pattern_type = NULL;
 
 static MG_THREAD_LOCAL py_call_frame *current_frame = NULL;
 
-void py_frame_enter(py_call_frame *frame, PyObject *context) {
-  frame->context = context;
+void py_frame_enter(py_call_frame *frame) {
   frame->exc = NULL;
   frame->build_cause = NULL;
   frame->prev = current_frame;

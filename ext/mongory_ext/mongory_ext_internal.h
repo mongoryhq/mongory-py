@@ -60,7 +60,6 @@ typedef struct py_mongory_array_t {
  * Python exceptions, so the first one is parked here and re-raised once core returns.
  */
 typedef struct py_call_frame {
-  PyObject *context;     /* borrowed CompileContext (or None) */
   PyObject *exc;         /* pending exception to re-raise as-is */
   PyObject *build_cause; /* exception chained as __cause__ of a compile error */
   struct py_call_frame *prev;
@@ -93,7 +92,7 @@ py_mongory_memory_pool_t *py_mongory_memory_pool_new(py_mongory_matcher_t *owner
 void py_mongory_memory_pool_reset(py_mongory_memory_pool_t *pool);
 void py_mongory_memory_pool_destroy(py_mongory_memory_pool_t *pool);
 
-void py_frame_enter(py_call_frame *frame, PyObject *context);
+void py_frame_enter(py_call_frame *frame);
 void py_frame_exit(py_call_frame *frame);
 py_call_frame *py_current_frame(void);
 bool py_callback_aborted(void);

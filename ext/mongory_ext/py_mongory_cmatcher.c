@@ -111,7 +111,7 @@ static int CMatcher_init(py_mongory_matcher_t *self, PyObject *args, PyObject *k
 
   mongory_memory_pool *pool_base = &self->pool->base;
   py_call_frame frame;
-  py_frame_enter(&frame, ctx_obj);
+  py_frame_enter(&frame);
   self->key_cache = mongory_table_new(pool_base);
   self->condition = py_to_mongory_value_deep(pool_base, cond_obj);
   self->matcher = mongory_matcher_new(pool_base, self->condition, (void *)ctx_obj);
@@ -162,7 +162,7 @@ static PyObject *CMatcher_match(py_mongory_matcher_t *self, PyObject *record) {
   mongory_memory_pool *scratch_base = &scratch->base;
 
   py_call_frame frame;
-  py_frame_enter(&frame, self->context);
+  py_frame_enter(&frame);
   mongory_value *data_val = py_to_mongory_value_shallow(scratch_base, record);
   bool matched = mongory_matcher_match(self->matcher, data_val);
   py_frame_exit(&frame);
@@ -255,7 +255,7 @@ static PyObject *CMatcher_explain_tree(py_mongory_matcher_t *self, PyObject *Py_
   mongory_memory_pool *scratch_base = &scratch->base;
 
   py_call_frame frame;
-  py_frame_enter(&frame, self->context);
+  py_frame_enter(&frame);
   mongory_value *tree = mongory_matcher_explain_tree(self->matcher, scratch_base);
   py_frame_exit(&frame);
 
@@ -279,7 +279,7 @@ static PyObject *CMatcher_trace_tree(py_mongory_matcher_t *self, PyObject *recor
   mongory_memory_pool *trace_base = &trace_pool->base;
 
   py_call_frame frame;
-  py_frame_enter(&frame, self->context);
+  py_frame_enter(&frame);
   mongory_value *data_val = py_to_mongory_value_shallow(trace_base, record);
   mongory_value *tree = NULL;
   if (data_val && !trace_base->error && !frame.exc) {

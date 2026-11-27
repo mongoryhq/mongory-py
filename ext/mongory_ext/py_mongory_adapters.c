@@ -116,9 +116,8 @@ static char *py_mongory_regex_stringify_adapter(mongory_memory_pool *pool, mongo
  * Custom Matcher Adapters
  * ============================================================================ */
 
-static bool py_mongory_custom_matcher_lookup(char *key) {
-  py_call_frame *frame = py_current_frame();
-  PyObject *context = frame ? frame->context : NULL;
+static bool py_mongory_custom_matcher_lookup(char *key, void *extern_ctx) {
+  PyObject *context = (PyObject *)extern_ctx;
   if (!context || context == Py_None || py_callback_aborted()) {
     return false;
   }
