@@ -20,7 +20,7 @@ on:
       spec_ref:
         description: "mongory-spec git ref (branch, tag, or SHA)"
         required: false
-        default: "main"
+        default: "v0.3.0"
 
 jobs:
   conformance:
@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: mongoryhq/mongory-spec
-          ref: ${{ inputs.spec_ref || 'main' }}
+          ref: ${{ inputs.spec_ref || 'v0.3.0' }}
           path: mongory-spec
 
       - name: Set up Python ${{ matrix.python-version }}
