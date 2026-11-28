@@ -25,21 +25,31 @@ OperatorCompiler = Callable[[Any], OperatorPredicate]
 _LITERAL_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin"})
 
 
-def _count_unescaped_dots(key: str) -> int:
-    """Counts unescaped `.` separators for per-compile max_depth enforcement (core does actual expansion)."""
-    trimmed = key.rstrip(".")
-    count = 0
+def _analyze_key(key: str) -> tuple[int, str]:
+    """Splits a dotted key respecting `\\.` escapes and trailing dots (matching mongory-core).
+
+    Returns `(extra_depth, unescaped_leaf_key)` for per-compile `max_depth` enforcement
+    and literal/custom-operator leaf detection; actual key expansion happens in `mongory-core`.
+    """
+    segments: list[str] = []
+    buf: list[str] = []
     i = 0
-    n = len(trimmed)
+    n = len(key)
     while i < n:
-        if trimmed[i] == "\\" and i + 1 < n and trimmed[i + 1] == ".":
+        if key[i] == "\\" and i + 1 < n and key[i + 1] == ".":
+            buf.append(".")
             i += 2
-        elif trimmed[i] == ".":
-            count += 1
+        elif key[i] == ".":
+            segments.append("".join(buf))
+            buf.clear()
             i += 1
         else:
+            buf.append(key[i])
             i += 1
-    return count
+    segments.append("".join(buf))
+    while len(segments) > 1 and segments[-1] == "":
+        segments.pop()
+    return (len(segments) - 1, segments[-1])
 
 
 class CompileContext:
@@ -143,10 +153,9 @@ class CompileContext:
                 if not isinstance(raw_key, str):
                     raise self._invalid_condition_error(f"Condition key must be a str, got {type(raw_key).__name__}")
                 self._bump_node(nodes)
-                extra_depth = _count_unescaped_dots(raw_key)
+                extra_depth, leaf_key = _analyze_key(raw_key)
                 if depth + extra_depth > self.max_depth:
                     raise self._limit_exceeded_error(f"Condition exceeds max_depth limit ({self.max_depth})")
-                leaf_key = raw_key.rsplit(".", 1)[-1] if "." in raw_key else raw_key
                 norm_val = self._normalize_value(
                     raw_val,
                     parent_key=leaf_key,
