@@ -311,6 +311,29 @@ class TestMongoryPythonAPI(unittest.TestCase):
         self.assertFalse(any(t.is_alive() for t in threads), "deadlock")
         self.assertEqual(errors, [])
 
+    def test_recursive_reentry_preserves_scratch_pool(self) -> None:
+        nested_results: list[bool] = []
+
+        class ReentrantScore:
+            def __init__(self, value: int) -> None:
+                self.value = value
+
+        m_box: list[mongory.Matcher] = []
+
+        def convert_score(obj: ReentrantScore) -> int:
+            nested_results.append(m_box[0].match({"score": 1, "tag": "no"}))
+            nested_results.append(m_box[0].match({"score": 9, "tag": "ok"}))
+            return obj.value
+
+        m = mongory.compile({"score": {"$gt": 5}, "tag": "ok"}, converters={ReentrantScore: convert_score})
+        m_box.append(m)
+
+        for _ in range(3):
+            nested_results.clear()
+            self.assertTrue(m.match({"score": ReentrantScore(10), "tag": "ok"}))
+            self.assertEqual(nested_results, [False, True])
+        self.assertTrue(m.match({"score": 7, "tag": "ok"}))
+
     def test_lossy_scalars_never_compare_equal(self) -> None:
         self.assertFalse(mongory.match({"s": "a\x00b"}, {"s": "a"}))
         self.assertFalse(mongory.match({"n": 2**63}, {"n": 2**63 + 1}))
