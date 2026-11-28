@@ -2,10 +2,10 @@
 
 Handles:
 - Top-level condition validation (`None` -> `{}`, `Mapping` -> normalized `dict`).
-- Unescaped dot-path splitting (`"a.b"` -> `{"a": {"b": ...}}`) and `\\.` unescaping.
-- Leaf collision preservation via `"$and"` (aligned with Go, JS, Ruby, and C spec).
 - Cycle detection and `max_depth` / `max_nodes` safety limits.
 - Compile-scoped type converters and custom operators.
+(Dotted-path splitting, `\\.` unescaping, and leaf-collision `$and` merging are
+performed natively by `mongory-core` inside `mongory_matcher_new`.)
 """
 
 from __future__ import annotations
@@ -25,56 +25,21 @@ OperatorCompiler = Callable[[Any], OperatorPredicate]
 _LITERAL_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin"})
 
 
-def _split_dotted_key(key: str) -> list[str]:
-    if key == "":
-        return [""]
-    segments: list[str] = []
-    buf: list[str] = []
+def _count_unescaped_dots(key: str) -> int:
+    """Counts unescaped `.` separators for per-compile max_depth enforcement (core does actual expansion)."""
+    trimmed = key.rstrip(".")
+    count = 0
     i = 0
-    n = len(key)
+    n = len(trimmed)
     while i < n:
-        ch = key[i]
-        if ch == "\\" and i + 1 < n and key[i + 1] == ".":
-            buf.append(".")
+        if trimmed[i] == "\\" and i + 1 < n and trimmed[i + 1] == ".":
             i += 2
-        elif ch == ".":
-            segments.append("".join(buf))
-            buf = []
+        elif trimmed[i] == ".":
+            count += 1
             i += 1
         else:
-            buf.append(ch)
             i += 1
-    segments.append("".join(buf))
-    while len(segments) > 1 and segments[-1] == "":
-        segments.pop()
-    return segments
-
-
-def _deep_merge_into(target: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
-    and_clauses: list[dict[str, Any]] | None = None
-    for key, val in source.items():
-        if key not in target:
-            target[key] = val
-        elif isinstance(target[key], dict) and isinstance(val, dict):
-            target[key] = _deep_merge_into(dict(target[key]), val)
-        else:
-            if and_clauses is None:
-                and_clauses = []
-            prev = target.pop(key)
-            and_clauses.append({key: prev})
-            and_clauses.append({key: val})
-
-    if and_clauses is not None:
-        existing_and = target.get("$and")
-        if isinstance(existing_and, list):
-            target["$and"] = [*existing_and, *and_clauses]
-        elif "$and" in target:
-            prev_and = target.pop("$and")
-            target["$and"] = [{"$and": prev_and}, *and_clauses]
-        else:
-            target["$and"] = and_clauses
-
-    return target
+    return count
 
 
 class CompileContext:
@@ -178,11 +143,10 @@ class CompileContext:
                 if not isinstance(raw_key, str):
                     raise self._invalid_condition_error(f"Condition key must be a str, got {type(raw_key).__name__}")
                 self._bump_node(nodes)
-                segments = _split_dotted_key(raw_key)
-                extra_depth = len(segments) - 1
+                extra_depth = _count_unescaped_dots(raw_key)
                 if depth + extra_depth > self.max_depth:
                     raise self._limit_exceeded_error(f"Condition exceeds max_depth limit ({self.max_depth})")
-                leaf_key = segments[-1]
+                leaf_key = raw_key.rsplit(".", 1)[-1] if "." in raw_key else raw_key
                 norm_val = self._normalize_value(
                     raw_val,
                     parent_key=leaf_key,
@@ -190,10 +154,7 @@ class CompileContext:
                     seen=seen,
                     nodes=nodes,
                 )
-                nested: Any = norm_val
-                for seg in reversed(segments[1:]):
-                    nested = {seg: nested}
-                _deep_merge_into(result, {segments[0]: nested})
+                result[raw_key] = norm_val
             return result
         finally:
             seen.remove(obj_id)
